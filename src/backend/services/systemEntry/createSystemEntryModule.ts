@@ -1,7 +1,6 @@
 import type { SystemAction, SystemEntryModule, SystemSharedFile } from '@/shared/contracts';
 
 import {
-  getSystemIntegration,
   nativeSystemEntrySchema,
   type NativeSystemEntry,
   type SystemIntegrationNativeModule,
@@ -19,7 +18,7 @@ export function createSystemEntryModule(dependencies: Dependencies): {
   module: SystemEntryModule;
   dispose(): Promise<void>;
 } {
-  const native = dependencies.native === undefined ? getSystemIntegration() : dependencies.native;
+  const native = dependencies.native ?? null;
   const claims = new Set<{ controller: AbortController; settled: Promise<void> }>();
   const receivingListeners = new Set<() => void>();
   let disposed = false;

@@ -31,7 +31,8 @@ export function getNativeAppUpdate(): NativeAppUpdate | null {
 }
 
 export function getNativeAppStoreUpdate() {
-  return requireOptionalNativeModule<{ getStorefrontCountry(): Promise<string | null> }>(
-    'AppStoreUpdate',
-  );
+  return requireOptionalNativeModule<{
+    getStorefrontCountry(): Promise<string | null>;
+    canOpenWebsiteCheckout?(): Promise<boolean>;
+  }>('AppStoreUpdate');
 }

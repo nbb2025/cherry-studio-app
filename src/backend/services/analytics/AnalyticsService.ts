@@ -14,6 +14,7 @@ import {
   ServicePhase,
 } from '@/backend/core/lifecycle';
 import { aiUsageRecordService } from '@/backend/data/services/AiUsageRecordService';
+import { isIagentEdition } from '@/shared/utils/iagentEdition';
 import { isDataCollectionConsented } from '@/shared/utils/privacyConsent';
 
 import { localDateKey } from './analyticsActivity';
@@ -166,7 +167,8 @@ export class AnalyticsService extends BaseService implements Activatable {
     const { dataCollectionEnabled, policyVersion } = application
       .get('PreferenceService')
       .getMultipleCached(CONSENT_PREFERENCE_KEYS);
-    this.desiredEnabled = isDataCollectionConsented(dataCollectionEnabled, policyVersion);
+    this.desiredEnabled =
+      !isIagentEdition() && isDataCollectionConsented(dataCollectionEnabled, policyVersion);
     return this.run(async () => {
       if (this.desiredEnabled) await this.activate();
       else await this.deactivate();

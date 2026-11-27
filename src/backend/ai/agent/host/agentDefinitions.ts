@@ -14,6 +14,7 @@ import { AgentProtocolError } from '@/shared/contracts/agent';
 import { agentPolicy } from '@/shared/data/managedPolicy';
 import type { AgentMode, AgentToolApprovalMode } from '@/shared/data/types/agent';
 import { parseUniqueModelId, type UniqueModelId } from '@/shared/data/types/model';
+import { isIagentEdition } from '@/shared/utils/iagentEdition';
 
 import type { RuntimeModel, RuntimeOptions } from '../runtime';
 
@@ -55,7 +56,12 @@ export function createAgentTableDefinitionSource(): AgentDefinitionSource {
       if (!agent) {
         return null;
       }
-      const configuredModel = agent.model ?? fallbackModelId;
+      const configuredModel =
+        agent.model ??
+        fallbackModelId ??
+        (isIagentEdition()
+          ? await application.get('PreferenceService').get('agent.default_model_id')
+          : null);
       if (!configuredModel) {
         throw new AgentProtocolError({
           code: 'AGENT_MODEL_NOT_CONFIGURED',

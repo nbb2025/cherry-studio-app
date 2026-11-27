@@ -34,6 +34,7 @@ const modelPickerEstimatedItemSize = 60;
 type ModelPickerDensity = 'default' | 'compact';
 
 type ModelPickerListProps = {
+  bottomInset?: number;
   cherryAiEntry?: ReactNode;
   disabled?: boolean;
   /** The containing surface can own the gutter when embedding the list. */
@@ -70,6 +71,7 @@ type ModelPickerListExtraData = {
 
 /** Provider-grouped model rows shared by the picker sheet and inline setup. */
 export function ModelPickerList({
+  bottomInset = 0,
   cherryAiEntry,
   disabled = false,
   contentInset = 'default',
@@ -216,7 +218,13 @@ export function ModelPickerList({
     [onCloudOffer, onSelect, showBadges],
   );
   const keyExtractor = useCallback((item: ModelPickerListItem) => item.key, []);
-  const getItemType = useCallback((item: ModelPickerListItem) => item.type, []);
+  const getItemType = useCallback(
+    (item: ModelPickerListItem) =>
+      item.type === 'groupHeader' && item.provider.id === CLOUD_PROVIDER_ID
+        ? 'cloudGroupHeader'
+        : item.type,
+    [],
+  );
   const handleFirstVisibleItemChanged = useCallback(
     ({ index }: { index: number }) => {
       const anchorIndex = listRef.current?.getState().isAtEnd
@@ -257,6 +265,10 @@ export function ModelPickerList({
     },
     [fastScrollAnchors],
   );
+  const listContentContainerStyle = useMemo(
+    () => ({ paddingBottom: 24 + bottomInset }),
+    [bottomInset],
+  );
   const emptyButton =
     !isLoading && emptyAction ? (
       <Button
@@ -296,7 +308,7 @@ export function ModelPickerList({
       <BlurTargetView ref={blurTarget} style={styles.list}>
         <LegendList
           ref={listRef}
-          contentContainerStyle={styles.listContentContainer}
+          contentContainerStyle={listContentContainerStyle}
           data={listItems}
           drawDistance={320}
           estimatedItemSize={density === 'compact' ? 44 : modelPickerEstimatedItemSize}
@@ -326,6 +338,7 @@ export function ModelPickerList({
           activeIndex={activeAnchorIndex}
           anchors={fastScrollAnchors}
           blurTarget={blurTarget}
+          bottomInset={bottomInset}
           onNavigate={handleFastScrollNavigate}
         />
       ) : null}
@@ -348,7 +361,11 @@ function ModelPickerGroupHeader({
 }) {
   return (
     <View
-      className={cn('pb-1', contentInset === 'default' && 'px-5', isFirstGroup ? 'pt-1' : 'pt-3')}
+      className={cn(
+        children ? 'gap-2 pb-2' : 'pb-1',
+        contentInset === 'default' && 'px-5',
+        isFirstGroup ? 'pt-1' : 'pt-3',
+      )}
       style={children && trailingInset !== undefined ? { paddingRight: trailingInset } : undefined}
     >
       <Text className="font-medium text-muted-foreground text-xs">{title}</Text>
@@ -466,8 +483,5 @@ const modelPickerBadgeLabelKeys = {
 const styles = StyleSheet.create({
   list: {
     flex: 1,
-  },
-  listContentContainer: {
-    paddingBottom: 24,
   },
 });

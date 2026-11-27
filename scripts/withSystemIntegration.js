@@ -57,7 +57,7 @@ module.exports = (config) => {
       }
       writePlist(path.join(directory, 'Info.plist'), {
         CFBundleDevelopmentRegion: 'en',
-        CFBundleDisplayName: 'Cherry Studio',
+        CFBundleDisplayName: config.name,
         CFBundleExecutable: '$(EXECUTABLE_NAME)',
         CFBundleIdentifier: '$(PRODUCT_BUNDLE_IDENTIFIER)',
         CFBundleInfoDictionaryVersion: '6.0',
@@ -131,7 +131,7 @@ module.exports = (config) => {
           GENERATE_INFOPLIST_FILE: 'NO',
           CODE_SIGN_ENTITLEMENTS: `"${target.name}/${target.name}.entitlements"`,
           CODE_SIGN_STYLE: 'Automatic',
-          DEVELOPMENT_TEAM: config.ios.appleTeamId ?? '',
+          ...(config.ios.appleTeamId ? { DEVELOPMENT_TEAM: config.ios.appleTeamId } : {}),
           IPHONEOS_DEPLOYMENT_TARGET: target.minimum,
           CURRENT_PROJECT_VERSION: config.ios.buildNumber ?? '1',
           MARKETING_VERSION: config.version ?? '1.0',

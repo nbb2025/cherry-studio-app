@@ -6,6 +6,7 @@ import {
 import type { AgentToolBinding } from '@/shared/data/types/agentToolBinding';
 import type { McpServer } from '@/shared/data/types/mcpServer';
 import { clampMcpToolApproval } from '@/shared/utils/agentToolApproval';
+import { isIagentEdition } from '@/shared/utils/iagentEdition';
 
 import type { RuntimeTool } from '../runtime';
 
@@ -50,6 +51,7 @@ export function createAgentRuntimeToolResolver(input: {
 }): AgentRuntimeToolResolver {
   return {
     async resolve(agentId, onUnavailable, signal, workspaceFolderId) {
+      if (isIagentEdition()) return { tools: [], pluginGuides: [] };
       const [{ items }, { items: connectedServers }] = await Promise.all([
         input.bindings.list(agentId),
         input.servers.list(),

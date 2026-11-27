@@ -6,6 +6,7 @@ import {
   AgentEmojiAvatarSchema,
   AgentSchema,
   DEEPSEEK_AGENT_AVATAR,
+  IAGENT_ASSISTANT_AVATAR,
 } from '@/shared/data/types/agent';
 
 import { type OrderEndpoints } from './endpointHelpers';
@@ -26,7 +27,13 @@ export const CreateAgentSchema = AgentSchema.pick(AGENT_MUTABLE_FIELDS)
   .partial()
   .required({ name: true })
   .extend({
-    avatar: z.union([AgentEmojiAvatarSchema, z.literal(DEEPSEEK_AGENT_AVATAR)]).optional(),
+    avatar: z
+      .union([
+        AgentEmojiAvatarSchema,
+        z.literal(DEEPSEEK_AGENT_AVATAR),
+        z.literal(IAGENT_ASSISTANT_AVATAR),
+      ])
+      .optional(),
   })
   .strict();
 export type CreateAgentDto = z.infer<typeof CreateAgentSchema>;

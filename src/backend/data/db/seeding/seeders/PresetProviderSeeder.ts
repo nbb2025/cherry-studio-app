@@ -8,6 +8,8 @@ import {
 import { providerRegistryService } from '@/backend/data/services/ProviderRegistryService';
 import { batchUpsertProviders } from '@/backend/data/services/ProviderService';
 import { CLOUD_PROVIDER_ID } from '@/shared/contracts/cloud';
+import { iagentGroupId } from '@/shared/contracts/iagent';
+import { isPresetProviderAvailable } from '@/shared/utils/iagentEdition';
 
 import { appStateTable } from '../../schemas/appState';
 import { userProviderTable } from '../../schemas/userProvider';
@@ -42,7 +44,9 @@ export class PresetProviderSeeder implements DatabaseSeeder {
     // preserve the user's choice even if they removed every ordinary provider.
     const isFreshInstall =
       previousRuns.length === 0 &&
-      existingRows.every((row) => row.providerId === CLOUD_PROVIDER_ID);
+      existingRows.every(
+        ({ providerId }) => providerId === CLOUD_PROVIDER_ID || iagentGroupId(providerId) !== null,
+      );
     const edition = isFreshInstall ? await this.getEdition() : 'global';
     const catalog = providerRegistryService.loadProviders();
     const catalogById = new Map(catalog.map((provider) => [provider.id, provider]));
@@ -50,6 +54,7 @@ export class PresetProviderSeeder implements DatabaseSeeder {
       ? catalog
           .filter(
             (provider) =>
+              isPresetProviderAvailable(provider.id) &&
               isRecommendedPresetProvider(provider.id) &&
               (!provider.availableInEditions || provider.availableInEditions.includes(edition)),
           )

@@ -10,6 +10,7 @@ import type { DesktopConnectionsModule } from './desktopConnections';
 import type { DiagnosticsModule } from './diagnostics';
 import type { DocumentExportModule } from './documentExport';
 import type { FileModule } from './file';
+import type { IagentModule } from './iagent';
 import type { McpModule } from './mcp';
 import type { ModelsModule } from './models';
 import type { PaintingsModule } from './paintings';
@@ -28,6 +29,7 @@ import type { WebSearchModule } from './webSearch';
 
 export interface Backend {
   readonly account: AccountModule;
+  readonly iagent?: IagentModule;
   readonly cloud: CloudModule;
   readonly ssh: SshModule;
   readonly backgroundExecution: BackgroundExecutionModule;

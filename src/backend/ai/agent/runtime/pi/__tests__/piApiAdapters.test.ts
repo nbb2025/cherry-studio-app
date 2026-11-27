@@ -1,5 +1,6 @@
 import {
   ENDPOINT_TYPE,
+  MODEL_CAPABILITY,
   REASONING_FORMAT_PROFILES,
   selectFormatWire,
 } from '@cherrystudio/provider-registry';
@@ -7,7 +8,11 @@ import type { AssistantMessage, FetchFunction, Model as PiModel } from '@earendi
 import { KIMI_CODING_MODELS } from '@earendil-works/pi-ai/providers/kimi-coding.models';
 import { normalizeContext } from '@earendil-works/pi-ai/utils/transcript';
 
+import { modelService } from '@/backend/data/services/ModelService';
+import { installProviderRegistryTestSnapshot } from '@/backend/data/services/providerRegistryTestSnapshot';
+import { providerService } from '@/backend/data/services/ProviderService';
 import type { Model } from '@/shared/data/types/model';
+import { DEFAULT_API_FEATURES, type Provider } from '@/shared/data/types/provider';
 
 import { createTraceRecorder } from '../../../../observability/__tests__/_traceRecorder';
 import { formatMessageQuote } from '../../../host/turnRuntimeInput';
@@ -18,8 +23,24 @@ import {
   type PiLanguageEndpointType,
   type SupportedPiApi,
 } from '../piApiAdapters';
+import { piModelPayloadAttributes } from '../piModelDiagnostics';
+import { createPiModelResolver } from '../piModelResolver';
 import type { PiStreamFn } from '../piModelTypes';
+import { emptyAssistantMessage } from '../piStreamEvents';
 import { applyPiWebReplay } from '../PiWebResponse';
+
+const mockExpoFetch = jest.fn();
+
+jest.mock('expo/fetch', () => ({ fetch: (...args: unknown[]) => mockExpoFetch(...args) }));
+jest.mock('@/backend/data/services/ModelService', () => ({
+  modelService: { getById: jest.fn() },
+}));
+jest.mock('@/backend/data/services/ProviderService', () => ({
+  providerService: {
+    getByProviderId: jest.fn(),
+    resolveApiKey: jest.fn(),
+  },
+}));
 
 const mockAnthropicStreamSimple = jest.fn();
 const mockGoogleStreamSimple = jest.fn();
@@ -103,6 +124,7 @@ describe('Pi API adapters', () => {
       });
     });
     const stream = await bindPiStream(adapter, {
+      shouldStream: true,
       apiKey: 'test',
       fetch,
       headers: {},
@@ -200,6 +222,144 @@ describe('Pi API adapters', () => {
     expect(wire).toContain('data:image/png;base64,cGl4ZWxz');
   });
 
+  test.each([
+    {
+      providerId: 'custom-relay',
+      apiModelId: 'deepseek-reasoner',
+      baseUrl: 'https://relay.example.test/v1',
+      required: true,
+    },
+    {
+      providerId: 'new-api',
+      apiModelId: 'deepseek-flash',
+      baseUrl: 'https://newapi.example.test/v1',
+      required: true,
+    },
+    {
+      providerId: 'custom-relay',
+      apiModelId: 'qwen3',
+      baseUrl: 'https://relay.example.test/v1',
+      required: false,
+    },
+    {
+      providerId: 'openrouter',
+      apiModelId: 'deepseek/deepseek-reasoner',
+      baseUrl: 'https://relay.example.test/v1',
+      required: false,
+    },
+    {
+      providerId: 'custom-openrouter',
+      apiModelId: 'deepseek/deepseek-flash',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      required: false,
+    },
+  ])(
+    'real $providerId $apiModelId payload fills missing assistant reasoning only when required',
+    async ({ providerId, apiModelId, baseUrl, required }) => {
+      installProviderRegistryTestSnapshot();
+      const endpoint = ENDPOINT_TYPE.OPENAI_CHAT_COMPLETIONS;
+      const adapter = resolvePiApiAdapter(endpoint);
+      const { streamSimple } = jest.requireActual<{ streamSimple: PiStreamFn }>(
+        '@earendil-works/pi-ai/api/openai-completions',
+      );
+      jest.spyOn(adapter, 'loadStreamSimple').mockResolvedValue(streamSimple);
+      const payloads: Record<string, unknown>[] = [];
+      mockExpoFetch.mockImplementation(async (_url: unknown, init?: RequestInit) => {
+        payloads.push(JSON.parse(String(init?.body)));
+        return new Response(JSON.stringify({ error: { message: 'captured' } }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+      const provider: Provider = {
+        id: providerId,
+        name: 'Relay',
+        isEnabled: true,
+        authType: 'api-key',
+        authMethods: ['api-key'],
+        apiKeys: [],
+        apiFeatures: { ...DEFAULT_API_FEATURES },
+        defaultChatEndpoint: endpoint,
+        endpointConfigs: { [endpoint]: { adapterFamily: 'openai-compatible', baseUrl } },
+        settings: {},
+      };
+      const model: Model = {
+        id: `${providerId}::saved-model`,
+        modelId: 'saved-model',
+        apiModelId,
+        name: 'Saved model',
+        providerId,
+        isEnabled: true,
+        isHidden: false,
+        capabilities: [MODEL_CAPABILITY.REASONING, MODEL_CAPABILITY.FUNCTION_CALL],
+        endpointTypes: [endpoint],
+        reasoning: { defaultEffort: 'high', selectableEfforts: ['high'] },
+        supportsStreaming: true,
+      };
+      jest.mocked(modelService.getById).mockResolvedValue(model);
+      jest.mocked(providerService.getByProviderId).mockResolvedValue(provider);
+      jest.mocked(providerService.resolveApiKey).mockResolvedValue({
+        value: 'test-key',
+        apiKeySelection: { attribution: 'unknown' },
+      });
+      const resolution = await createPiModelResolver().resolveModel(
+        { modelId: model.modelId, providerId },
+        { reasoningEffort: 'high' },
+        'session',
+      );
+      expect(resolution.model.reasoning).toBe(true);
+      const historicalAssistant = emptyAssistantMessage(resolution.model);
+      const source = await resolution.streamFn(
+        resolution.model,
+        normalizeContext({
+          systemPrompt: 'Use lookup when needed.',
+          tools: [
+            {
+              name: 'lookup',
+              description: 'Look up data',
+              parameters: { type: 'object', properties: {} },
+            },
+          ],
+          messages: [
+            { role: 'user', content: 'Look up data.', timestamp: 1 },
+            { ...historicalAssistant, content: [{ type: 'text', text: 'I will look it up.' }] },
+            {
+              ...historicalAssistant,
+              stopReason: 'toolUse',
+              content: [{ type: 'toolCall', id: 'call', name: 'lookup', arguments: {} }],
+            },
+            {
+              role: 'toolResult',
+              toolCallId: 'call',
+              toolName: 'lookup',
+              content: [{ type: 'text', text: 'Found' }],
+              isError: false,
+              timestamp: 2,
+            },
+            { role: 'user', content: 'Continue.', timestamp: 3 },
+          ],
+        }),
+        { reasoning: 'high' },
+      );
+      expect((await source.result()).errorMessage).toContain('captured');
+      expect(payloads).toHaveLength(1);
+      expect(payloads[0]).toMatchObject({
+        model: apiModelId,
+        tools: [{ type: 'function', function: { name: 'lookup' } }],
+      });
+      const assistants = (payloads[0]!.messages as Record<string, unknown>[]).filter(
+        (message) => message.role === 'assistant',
+      );
+      expect(assistants).toHaveLength(2);
+      expect(assistants[0]).toMatchObject({ content: 'I will look it up.' });
+      expect(assistants[1]).toMatchObject({ tool_calls: [{ id: 'call' }] });
+      for (const assistant of assistants) {
+        if (required) expect(assistant).toHaveProperty('reasoning_content', '');
+        else expect(assistant).not.toHaveProperty('reasoning_content');
+      }
+    },
+  );
+
   test.each(CASES)('binds $endpointType to $api', async (testCase) => {
     const adapter = resolvePiApiAdapter(testCase.endpointType);
     expect(adapter).toBeDefined();
@@ -212,6 +372,7 @@ describe('Pi API adapters', () => {
       .mockResolvedValue(testCase.streamSimple as unknown as PiStreamFn);
 
     const streamFn = await bindPiStream(adapter, {
+      shouldStream: true,
       apiKey: 'secret-key',
       fetch: mockFetch,
       headers: { 'X-App': 'Cherry' },
@@ -267,6 +428,7 @@ describe('Pi API adapters', () => {
     mockAzureResponsesStreamSimple.mockReturnValue(mockStreamResult);
 
     const streamFn = await bindPiStream(adapter, {
+      shouldStream: true,
       apiKey: 'azure-key',
       azureApiVersion: '2025-04-01-preview',
       fetch: mockFetch,
@@ -309,6 +471,7 @@ describe('Pi API adapters', () => {
         ? undefined
         : jest.spyOn(globalThis, 'fetch').mockImplementation(fetch);
       const streamFn = await bindPiStream(adapter, {
+        shouldStream: true,
         apiKey: '',
         fetch,
         headers: { 'X-App': 'Cherry' },
@@ -357,6 +520,7 @@ describe('Pi API adapters', () => {
       });
     });
     const streamFn = await bindPiStream(adapter, {
+      shouldStream: true,
       fetch,
       headers: { Authorization: 'Bearer kimi-access' },
       maxRetries: 0,
@@ -374,6 +538,7 @@ describe('Pi API adapters', () => {
     const adapter = resolvePiApiAdapter(ENDPOINT_TYPE.ANTHROPIC_MESSAGES);
     jest.spyOn(adapter, 'loadStreamSimple').mockResolvedValue(mockAnthropicStreamSimple);
     const streamFn = await bindPiStream(adapter, {
+      shouldStream: true,
       apiKey: '',
       fetch: mockFetch,
       headers: { aUtHoRiZaTiOn: 'Bearer gateway-token' },
@@ -395,6 +560,7 @@ describe('Pi API adapters', () => {
     const adapter = resolvePiApiAdapter(ENDPOINT_TYPE.ANTHROPIC_MESSAGES);
     jest.spyOn(adapter, 'loadStreamSimple').mockResolvedValue(mockAnthropicStreamSimple);
     const streamFn = await bindPiStream(adapter, {
+      shouldStream: true,
       apiKey: 'key',
       fetch: mockFetch,
       headers: {},
@@ -409,11 +575,16 @@ describe('Pi API adapters', () => {
       },
     });
     const piModel = { api: 'anthropic-messages' } as PiModel<SupportedPiApi>;
+    const messages = [
+      { role: 'user', content: 'private question' },
+      { role: 'private-role', content: 'private answer' },
+    ];
     await streamFn(piModel, context, {
       trace,
       maxTokens: 2048,
       onPayload: async () => ({
         model: 'rewritten-model',
+        messages,
         max_tokens: 8192,
         tool_choice: { type: 'none' },
       }),
@@ -421,6 +592,7 @@ describe('Pi API adapters', () => {
     const options = mockAnthropicStreamSimple.mock.calls.at(-1)![2];
     expect(await options.onPayload({}, piModel)).toEqual({
       model: 'rewritten-model',
+      messages,
       max_tokens: 2048,
       tool_choice: { type: 'none' },
       thinking: { type: 'enabled', budget_tokens: 2047 },
@@ -428,15 +600,39 @@ describe('Pi API adapters', () => {
     expect(options).not.toHaveProperty('trace');
     trace?.end('ok');
     expect(records.at(-1)?.attributes).toEqual({
+      'gen_ai.request.model': 'rewritten-model',
+      'gen_ai.request.message_roles': 'user|other',
       'gen_ai.request.max_tokens': 2048,
       'gen_ai.request.max_tokens_field': 'max_tokens',
     });
+  });
+
+  test('marks a withheld wire model and bounds the roles without reviving the configured alias', () => {
+    const { traces, records } = createTraceRecorder();
+    const trace = traces.startTrace(
+      'pi.generate_content',
+      {},
+      { 'gen_ai.request.model': 'configured-alias' },
+    );
+    const messages = Array.from({ length: 10 }, () => ({ role: 'assistant', content: 'private' }));
+    trace?.setAttributes(
+      piModelPayloadAttributes({ model: 'private model label', messages }, 'openai-completions'),
+    );
+    trace?.end('error');
+    expect(records.at(-1)?.attributes).toMatchObject({
+      'gen_ai.request.model_omitted': true,
+      'gen_ai.request.message_roles':
+        'assistant|assistant|assistant|assistant|omitted|assistant|assistant|assistant|assistant',
+    });
+    expect(records.at(-1)?.attributes['gen_ai.request.model']).toBeUndefined();
+    expect(JSON.stringify(records.at(-1))).not.toContain('private');
   });
 
   test('applies Gemini tool compatibility after an existing payload hook without registry parameters', async () => {
     const adapter = resolvePiApiAdapter(ENDPOINT_TYPE.OPENAI_CHAT_COMPLETIONS);
     jest.spyOn(adapter, 'loadStreamSimple').mockResolvedValue(mockOpenAiCompletionsStreamSimple);
     const stream = await bindPiStream(adapter, {
+      shouldStream: true,
       apiKey: 'key',
       fetch: mockFetch,
       headers: {},
@@ -474,134 +670,177 @@ describe('Pi API adapters', () => {
     });
   });
 
-  test('preserves streamed Anthropic thinking bytes in the same-turn tool continuation', async () => {
-    const { streamSimple } = jest.requireActual<{ streamSimple: PiStreamFn }>(
-      '@earendil-works/pi-ai/api/anthropic-messages',
-    );
-    const model: PiModel<'anthropic-messages'> = {
-      api: 'anthropic-messages',
+  test.each([
+    {
       provider: 'custom',
       id: 'opus-5.5',
-      name: 'Claude',
       baseUrl: 'https://api.anthropic.com',
-      input: ['text'],
-      reasoning: true,
-      contextWindow: 4096,
-      maxTokens: 256,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    };
-    // Fake signatures prove byte preservation, not cryptographic validity.
-    const expected = [
-      { type: 'thinking', thinking: 'Find the deploy log.', signature: 'opaque-live-signature' },
-      { type: 'tool_use', id: 'toolu_lookup', name: 'lookup', input: { query: 'deploy' } },
-    ];
-    const events = [
-      {
-        type: 'message_start',
-        message: { id: 'msg_live', model: model.id, usage: { input_tokens: 1, output_tokens: 0 } },
-      },
-      {
-        type: 'content_block_start',
-        index: 0,
-        content_block: { type: 'thinking', thinking: '', signature: '' },
-      },
-      {
-        type: 'content_block_delta',
-        index: 0,
-        delta: { type: 'thinking_delta', thinking: 'Find the deploy log.' },
-      },
-      {
-        type: 'content_block_delta',
-        index: 0,
-        delta: { type: 'signature_delta', signature: 'opaque-live-signature' },
-      },
-      { type: 'content_block_stop', index: 0 },
-      {
-        type: 'content_block_start',
-        index: 1,
-        content_block: { type: 'tool_use', id: 'toolu_lookup', name: 'lookup', input: {} },
-      },
-      {
-        type: 'content_block_delta',
-        index: 1,
-        delta: { type: 'input_json_delta', partial_json: '{"query":"deploy"}' },
-      },
-      { type: 'content_block_stop', index: 1 },
-      { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 8 } },
-      { type: 'message_stop' },
-    ];
-    const payloads: { messages: { role: string; content: unknown[] }[] }[] = [];
-    const fetch = async (_url: unknown, init?: RequestInit) => {
-      payloads.push(JSON.parse(String(init?.body)));
-      return new Response(
-        events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(''),
-        { headers: { 'Content-Type': 'text/event-stream' } },
+      omitCompletedThinking: true,
+    },
+    {
+      provider: 'cherryin',
+      id: 'anthropic/claude-sonnet-5.5',
+      baseUrl: 'https://open.cherryin.net',
+      omitCompletedThinking: true,
+    },
+    {
+      provider: 'custom',
+      id: 'claude-sonnet-5-5',
+      baseUrl: 'https://relay.example/anthropic',
+      omitCompletedThinking: true,
+    },
+    {
+      provider: 'deepseek',
+      id: 'deepseek-flash',
+      baseUrl: 'https://api.deepseek.com/anthropic',
+      omitCompletedThinking: false,
+    },
+  ])(
+    '$provider/$id preserves active thinking bytes and applies its completed-turn replay policy',
+    async ({ provider, id, baseUrl, omitCompletedThinking }) => {
+      const { streamSimple } = jest.requireActual<{ streamSimple: PiStreamFn }>(
+        '@earendil-works/pi-ai/api/anthropic-messages',
       );
-    };
-    const user = { role: 'user' as const, content: 'Find deploy', timestamp: 0 };
-    const options = {
-      apiKey: 'test',
-      fetch,
-      maxRetries: 0,
-      onPayload: (payload: unknown) => applyPiWebReplay(payload, model, []),
-    };
-    const first = await (
-      await streamSimple(model, normalizeContext({ messages: [user] }), options)
-    ).result();
-    expect(first.stopReason).toBe('toolUse');
-    await (
-      await streamSimple(
-        model,
-        normalizeContext({
-          messages: [
-            user,
-            first,
-            {
-              role: 'toolResult',
-              toolCallId: 'toolu_lookup',
-              toolName: 'lookup',
-              content: [{ type: 'text', text: 'Found' }],
-              isError: false,
-              timestamp: 1,
-            },
-          ],
-        }),
-        options,
-      )
-    ).result();
-    expect(JSON.stringify(payloads[1]!.messages[1]!.content)).toBe(JSON.stringify(expected));
-    expect(payloads[1]!.messages[2]!.content).toEqual([
-      {
-        type: 'tool_result',
-        tool_use_id: 'toolu_lookup',
-        content: 'Found',
-        is_error: false,
-        cache_control: { type: 'ephemeral' },
-      },
-    ]);
-    const history = [
-      user,
-      first,
-      {
-        role: 'toolResult' as const,
-        toolCallId: 'toolu_lookup',
-        toolName: 'lookup',
-        content: [{ type: 'text' as const, text: 'Found' }],
-        isError: false,
-        timestamp: 1,
-      },
-      {
-        ...first,
-        stopReason: 'stop' as const,
-        content: [{ type: 'text' as const, text: 'Found it.' }],
-      },
-      { ...user, content: 'What changed?' },
-    ];
-    await (await streamSimple(model, normalizeContext({ messages: history }), options)).result();
-    expect(JSON.stringify(payloads[2])).not.toContain('opaque-live-signature');
-    expect(payloads[2]!.messages[1]!.content).toContainEqual(expected[1]);
-    expect(JSON.stringify(payloads[2])).toContain('Found it.');
-  });
+      const model: PiModel<'anthropic-messages'> = {
+        api: 'anthropic-messages',
+        provider,
+        id,
+        name: id,
+        baseUrl,
+        input: ['text'],
+        reasoning: true,
+        contextWindow: 4096,
+        maxTokens: 256,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      };
+      // Fake signatures prove byte preservation, not cryptographic validity.
+      const expected = [
+        { type: 'thinking', thinking: 'Find the deploy log.', signature: 'opaque-live-signature' },
+        { type: 'redacted_thinking', data: 'opaque-live-ciphertext' },
+        { type: 'tool_use', id: 'toolu_lookup', name: 'lookup', input: { query: 'deploy' } },
+      ];
+      const events = [
+        {
+          type: 'message_start',
+          message: {
+            id: 'msg_live',
+            model: model.id,
+            usage: { input_tokens: 1, output_tokens: 0 },
+          },
+        },
+        {
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'thinking', thinking: '', signature: '' },
+        },
+        {
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'thinking_delta', thinking: 'Find the deploy log.' },
+        },
+        {
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'signature_delta', signature: 'opaque-live-signature' },
+        },
+        { type: 'content_block_stop', index: 0 },
+        {
+          type: 'content_block_start',
+          index: 1,
+          content_block: { type: 'redacted_thinking', data: 'opaque-live-ciphertext' },
+        },
+        { type: 'content_block_stop', index: 1 },
+        {
+          type: 'content_block_start',
+          index: 2,
+          content_block: { type: 'tool_use', id: 'toolu_lookup', name: 'lookup', input: {} },
+        },
+        {
+          type: 'content_block_delta',
+          index: 2,
+          delta: { type: 'input_json_delta', partial_json: '{"query":"deploy"}' },
+        },
+        { type: 'content_block_stop', index: 2 },
+        { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 8 } },
+        { type: 'message_stop' },
+      ];
+      const payloads: { messages: { role: string; content: unknown[] }[] }[] = [];
+      const fetch = async (_url: unknown, init?: RequestInit) => {
+        payloads.push(JSON.parse(String(init?.body)));
+        return new Response(
+          events
+            .map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)
+            .join(''),
+          { headers: { 'Content-Type': 'text/event-stream' } },
+        );
+      };
+      const user = { role: 'user' as const, content: 'Find deploy', timestamp: 0 };
+      const options = {
+        apiKey: 'test',
+        fetch,
+        maxRetries: 0,
+        onPayload: (payload: unknown) => applyPiWebReplay(payload, model, []),
+      };
+      const first = await (
+        await streamSimple(model, normalizeContext({ messages: [user] }), options)
+      ).result();
+      expect(first.stopReason).toBe('toolUse');
+      expect(payloads[0]).toMatchObject({ thinking: { type: 'disabled' } });
+      await (
+        await streamSimple(
+          model,
+          normalizeContext({
+            messages: [
+              user,
+              first,
+              {
+                role: 'toolResult',
+                toolCallId: 'toolu_lookup',
+                toolName: 'lookup',
+                content: [{ type: 'text', text: 'Found' }],
+                isError: false,
+                timestamp: 1,
+              },
+            ],
+          }),
+          options,
+        )
+      ).result();
+      expect(JSON.stringify(payloads[1]!.messages[1]!.content)).toBe(JSON.stringify(expected));
+      expect(payloads[1]!.messages[2]!.content).toEqual([
+        {
+          type: 'tool_result',
+          tool_use_id: 'toolu_lookup',
+          content: 'Found',
+          is_error: false,
+          cache_control: { type: 'ephemeral' },
+        },
+      ]);
+      const history = [
+        user,
+        first,
+        {
+          role: 'toolResult' as const,
+          toolCallId: 'toolu_lookup',
+          toolName: 'lookup',
+          content: [{ type: 'text' as const, text: 'Found' }],
+          isError: false,
+          timestamp: 1,
+        },
+        {
+          ...first,
+          stopReason: 'stop' as const,
+          content: [{ type: 'text' as const, text: 'Found it.' }],
+        },
+        { ...user, content: 'What changed?' },
+      ];
+      await (await streamSimple(model, normalizeContext({ messages: history }), options)).result();
+      expect(payloads[2]!.messages[1]!.content).toEqual(
+        omitCompletedThinking ? [expected[2]] : expected,
+      );
+      expect(JSON.stringify(payloads[2])).toContain('Found it.');
+    },
+  );
 
   test('round-trips streamed Gemini tool signatures through saved context and isolates foreign histories', async () => {
     const adapter = resolvePiApiAdapter(ENDPOINT_TYPE.OPENAI_CHAT_COMPLETIONS);
@@ -662,6 +901,7 @@ describe('Pi API adapters', () => {
         : completion([{ content: 'Done' }], 'stop');
     });
     const stream = await bindPiStream(adapter, {
+      shouldStream: true,
       apiKey: 'key',
       fetch,
       headers: {},
@@ -766,6 +1006,7 @@ describe('Pi API adapters', () => {
         .spyOn(adapter, 'loadStreamSimple')
         .mockResolvedValue(streamSimple as unknown as PiStreamFn);
       const streamFn = await bindPiStream(adapter, {
+        shouldStream: true,
         apiKey: 'private-key',
         fetch: mockFetch,
         headers: {},

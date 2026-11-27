@@ -2,6 +2,7 @@ import { MobileRegistryLoader } from '@/backend/data/services/MobileRegistryLoad
 import type { NetworkRegion } from '@/backend/services/region';
 import { ProviderSetupError } from '@/shared/contracts';
 import type { ApiKeyEntry, Provider } from '@/shared/data/types/provider';
+import { configureIagentEdition } from '@/shared/utils/iagentEdition';
 
 import { createProvidersModule, type ProvidersModuleDependencies } from '../createProvidersModule';
 
@@ -67,6 +68,25 @@ function subject() {
 }
 
 describe('explicit provider activation', () => {
+  it('offers only DeepSeek as a preset in the iAgent edition', async () => {
+    const { dependencies } = subject();
+    const loader = new MobileRegistryLoader();
+    dependencies.catalog = {
+      isExcluded: (id) => loader.isProviderExcludedFromCatalog(id),
+      list: () => loader.loadProviders(),
+    };
+    jest.mocked(dependencies.providers.list).mockResolvedValue([]);
+    const backend = createProvidersModule(dependencies);
+    configureIagentEdition(true);
+    try {
+      expect((await backend.listCatalog()).map(({ id }) => id)).toEqual(['deepseek']);
+      await expect(backend.importPreset('openai')).rejects.toThrow('unavailable');
+      expect(dependencies.providers.create).not.toHaveBeenCalled();
+    } finally {
+      configureIagentEdition(false);
+    }
+  });
+
   it.each([
     { region: 'CN' as NetworkRegion | null, deviceRegion: 'US', expected: ['deepseek'] },
     {

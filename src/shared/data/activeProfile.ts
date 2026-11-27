@@ -14,6 +14,7 @@ export type EnterpriseIdentity = Readonly<
 
 export type ActiveProfile =
   | Readonly<{ id: 'local'; identity: null; address: null }>
+  | Readonly<{ id: `iagent-${number}`; identity: null; address: null; iagentUserId: number }>
   | Readonly<{
       id: string;
       identity: EnterpriseIdentity;

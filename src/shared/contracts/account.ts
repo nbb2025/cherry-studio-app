@@ -43,6 +43,8 @@ export type AccountState = Readonly<{
   /** Display name; never use it as a stable identity or infer a login name from it. */
   name?: string;
   maskedIdentifier?: string;
+  /** Numeric account identity for iAgent-only queries and results. */
+  iagentUserId?: number;
   /** Server used when reauthenticating the current private account. */
   privateAddress?: string;
   /** Actual login name returned by the private server; never inferred from a display name or ID. */

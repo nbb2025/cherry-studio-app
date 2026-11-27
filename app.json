@@ -1,8 +1,8 @@
 {
   "expo": {
-    "name": "Cherry Studio",
-    "slug": "cherry-studio",
-    "version": "0.6.2",
+    "name": "iAgent",
+    "slug": "iagent",
+    "version": "0.6.3",
     "locales": {
       "de": "./assets/permissions/locales/de.json",
       "el": "./assets/permissions/locales/el.json",
@@ -21,25 +21,19 @@
     "runtimeVersion": {
       "policy": "fingerprint"
     },
-    "updates": {
-      "url": "https://u.expo.dev/80096eaf-3ad0-4b87-a466-15f04da1bacc",
-      "checkAutomatically": "ON_LOAD",
-      "fallbackToCacheTimeout": 0,
-      "enableBsdiffPatchSupport": true
-    },
+    "updates": { "enabled": false },
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
-    "scheme": "cherrystudio",
+    "icon": "./assets/iagent-icon.png",
+    "scheme": "iagent",
     "userInterfaceStyle": "automatic",
     "ios": {
       "supportsTablet": true,
       "requireFullScreen": false,
       "icon": {
-        "light": "./assets/icon-light.png",
-        "dark": "./assets/icon-dark.png"
+        "light": "./assets/iagent-icon.png",
+        "dark": "./assets/iagent-icon-dark.png"
       },
-      "bundleIdentifier": "com.cherryai.cherrystudio-app",
-      "appleTeamId": "87242QY66T",
+      "bundleIdentifier": "dev.iagent.app",
       "privacyManifests": {
         "NSPrivacyTracking": false,
         "NSPrivacyCollectedDataTypes": [
@@ -97,7 +91,7 @@
       },
       "entitlements": {
         "com.apple.developer.healthkit": true,
-        "com.apple.security.application-groups": ["group.com.cherryai.cherrystudio-app"]
+        "com.apple.security.application-groups": ["group.dev.iagent.app"]
       },
       "infoPlist": {
         "UISupportedInterfaceOrientations~ipad": [
@@ -109,8 +103,7 @@
         "NSCalendarsWriteOnlyAccessUsageDescription": "Cherry Studio adds calendar events you request in chat, such as a meeting tomorrow at 10 AM, using details from your selected AI service.",
         "NSHealthShareUsageDescription": "Cherry Studio reads the Apple Health data you select when you ask in chat, such as summarizing your sleep and steps over the past week, and with your approval sends it to your selected AI service for analysis.",
         "NSHealthUpdateUsageDescription": "Cherry Studio reads selected Apple Health data to answer your health and fitness questions. It does not save or modify data in Apple Health.",
-        "NSLocalNetworkUsageDescription": "Allow Cherry Studio to connect to the Cherry Studio desktop app, AI providers, MCP servers, and SSH devices such as routers and NAS on your local network.",
-        "NSBonjourServices": ["_cherry-remote._tcp"],
+        "NSLocalNetworkUsageDescription": "Allow iAgent to connect to AI providers you configure on your local network.",
         "NSAppTransportSecurity": {
           "NSAllowsArbitraryLoads": true
         },
@@ -119,11 +112,11 @@
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/adaptive-icon.png",
-        "monochromeImage": "./assets/adaptive-icon-monochrome.png",
-        "backgroundColor": "#F65D5D"
+        "foregroundImage": "./assets/iagent-icon-adaptive.png",
+        "monochromeImage": "./assets/iagent-icon-monochrome.png",
+        "backgroundColor": "#F2F7FF"
       },
-      "package": "com.cherryai.cherrystudio_app",
+      "package": "dev.iagent.app",
       "predictiveBackGestureEnabled": false,
       "blockedPermissions": [
         "android.permission.RECEIVE_BOOT_COMPLETED",
@@ -142,7 +135,7 @@
     },
     "web": {
       "output": "static",
-      "favicon": "./assets/icon.png"
+      "favicon": "./assets/iagent-mark.png"
     },
     "plugins": [
       "expo-router",
@@ -183,7 +176,7 @@
         "expo-splash-screen",
         {
           "backgroundColor": "#FFFFFF",
-          "image": "./assets/icon.png",
+          "image": "./assets/iagent-mark.png",
           "imageWidth": 96,
           "resizeMode": "contain",
           "dark": {
@@ -196,13 +189,12 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Allow Cherry Studio to scan desktop pairing QR codes and take photos for chat messages and drawings.",
-          "microphonePermission": "Allow Cherry Studio to use the microphone for voice input.",
+          "cameraPermission": "Allow iAgent to take photos for chat messages.",
+          "microphonePermission": "Allow iAgent to use the microphone for voice input.",
           "recordAudioAndroid": false,
-          "barcodeScannerEnabled": true
+          "barcodeScannerEnabled": false
         }
       ],
-      "./scripts/withEmbeddedBarcodeScanner.js",
       [
         "expo-calendar",
         {
@@ -296,16 +288,15 @@
     },
     "extra": {
       "eas": {
-        "projectId": "80096eaf-3ad0-4b87-a466-15f04da1bacc",
         "build": {
           "experimental": {
             "ios": {
               "appExtensions": [
                 {
                   "targetName": "ExpoWidgetsTarget",
-                  "bundleIdentifier": "com.cherryai.cherrystudio-app.ExpoWidgetsTarget",
+                  "bundleIdentifier": "dev.iagent.app.ExpoWidgetsTarget",
                   "entitlements": {
-                    "com.apple.security.application-groups": ["group.com.cherryai.cherrystudio-app"]
+                    "com.apple.security.application-groups": ["group.dev.iagent.app"]
                   }
                 }
               ]

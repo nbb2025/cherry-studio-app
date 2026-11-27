@@ -15,6 +15,7 @@ import {
 import { useTranslation } from 'react-i18next';
 import { Keyboard } from 'react-native';
 
+import { useAccount } from '@/frontend/appShell/account';
 import type {
   ConversationMessage,
   ConversationSnapshot,
@@ -23,14 +24,22 @@ import type {
 import { conversationHref } from '@/frontend/appShell/navigation/chat';
 import { ModelPickerDrawer, type ModelPickerModelItem } from '@/frontend/components/ModelPicker';
 import { useModelChoice } from '@/frontend/components/Policy';
+import { usePreference } from '@/frontend/data/hooks';
 import { useTransientValue } from '@/frontend/hooks/useTransientValue';
+import { isIagentModel } from '@/shared/contracts/iagent';
 import { loggerService } from '@/shared/core/logger/LoggerService';
+import {
+  type AssistantMessageToolbarConfig,
+  normalizeAssistantMessageToolbarConfig,
+} from '@/shared/data/types/assistantMessageToolbar';
+import { isIagentEdition } from '@/shared/utils/iagentEdition';
 
 import { useChatEditing } from '../../../context/ChatEditingProvider';
 import { editReplyHref } from '../../../editReply/editReplyRoute';
 import { useIsChatShareSelecting } from '../../../share/chatShareSelection';
 import type { ChatShareTranslations } from '../../../share/chatShareTarget';
 import { getSendErrorCodeLabelKey } from '../../ChatInput/utils/sendErrorLabel';
+import { AssistantToolbarManageSheet } from '../components/AssistantToolbarManageSheet';
 import { useMessageTranslationStore } from '../translation/MessageTranslationProvider';
 import { copyAssistantMessageText } from '../utils/copyAssistantMessageText';
 
@@ -56,6 +65,7 @@ function isRetryModelWithdrawn(
 }
 
 type AssistantMessageActionsState = {
+  toolbarConfig: AssistantMessageToolbarConfig;
   copiedMessageId?: string;
   isAssistantToolbarEnabled: boolean;
   /** A running turn owns the transcript; its rows must not disappear underneath it. */
@@ -74,10 +84,15 @@ type AssistantMessageActionsState = {
 };
 
 type AssistantMessageActions = {
+  openToolbarManager: () => void;
   editAnswer?: (input: { messageId: string }) => void;
   retryAssistantMessage?: (input: { messageId: string }) => void;
   shareAssistantMessage: (input: { messageId: string }) => void;
-  copyAssistantMessage: (input: { messageId: string; text: string }) => void;
+  copyAssistantMessage: (input: {
+    messageId: string;
+    text: string;
+    notifySuccess?: boolean;
+  }) => void;
   /** Copies the transcript up to this message into a new chat and opens it. */
   forkFromAssistantMessage?: (input: { messageId: string }) => void;
   deleteMessageTurn?: (input: { turnId: string; messageId: string }) => void;
@@ -116,6 +131,16 @@ export function AssistantMessageActionsProvider({
   messages,
 }: AssistantMessageActionsProviderProps) {
   const { t } = useTranslation();
+  const { account } = useAccount();
+  const admitModel = useCallback(
+    (modelId: string | null | undefined) => {
+      if (!isIagentEdition() || !isIagentModel(modelId) || account.getState().isSignedIn)
+        return true;
+      router.navigate('/login');
+      return false;
+    },
+    [account],
+  );
   const { toast } = useToast();
   const { alert } = useAlert();
   const translationStore = useMessageTranslationStore();
@@ -274,11 +299,12 @@ export function AssistantMessageActionsProvider({
       const current = latest.current;
       if (current.isBusy) return;
       const action = current.messages.find((message) => message.key === messageId)?.actions.retry;
+      if (!admitModel(action?.modelId)) return;
       void run(`retry:${messageId}`, action, undefined, 'retryFailed', (ref) => {
         if (ref) router.replace(conversationHref(ref));
       });
     },
-    [run],
+    [admitModel, run],
   );
   const fork = useCallback(
     ({ messageId }: { messageId: string }) => {
@@ -346,12 +372,12 @@ export function AssistantMessageActionsProvider({
       const messageId = answeringMessageId;
       closeAnswerModelPicker();
       const current = latest.current;
-      if (!messageId || current.isBusy) return;
+      if (!messageId || current.isBusy || !admitModel(item.modelId)) return;
       const action = current.messages.find((message) => message.key === messageId)?.actions
         .answerWith;
       void run(`answer:${messageId}`, action, { modelId: item.modelId }, 'retryFailed');
     },
-    [answeringMessageId, closeAnswerModelPicker, run],
+    [admitModel, answeringMessageId, closeAnswerModelPicker, run],
   );
   const answeringMessage = answeringMessageId
     ? messages.find((message) => message.key === answeringMessageId)
@@ -473,6 +499,28 @@ export function ChatMessageActionsProvider({
 }>) {
   const { t } = useTranslation();
   const { toast } = useToast();
+  const [rawToolbarConfig, setToolbarConfig] = usePreference('ui.chat.assistant_toolbar_actions');
+  const toolbarConfig = useMemo(
+    () => normalizeAssistantMessageToolbarConfig(rawToolbarConfig),
+    [rawToolbarConfig],
+  );
+  const [isToolbarManagerMounted, setIsToolbarManagerMounted] = useState(false);
+  const [isToolbarManagerOpen, setIsToolbarManagerOpen] = useState(false);
+  const openToolbarManager = useCallback(() => {
+    Keyboard.dismiss();
+    setIsToolbarManagerMounted(true);
+    setIsToolbarManagerOpen(true);
+  }, []);
+  const closeToolbarManager = useCallback(() => setIsToolbarManagerOpen(false), []);
+  const handleToolbarManagerClosed = useCallback(() => setIsToolbarManagerMounted(false), []);
+  const changeToolbarConfig = useCallback(
+    (next: AssistantMessageToolbarConfig) => {
+      void setToolbarConfig(next, { optimistic: true }).catch(() => {
+        toast.show({ label: t('common.reorderFailed'), variant: 'danger' });
+      });
+    },
+    [setToolbarConfig, t, toast],
+  );
   const { value: copiedMessageId, show: showCopiedMessageId } = useTransientValue<string>(
     COPIED_FEEDBACK_DURATION_MS,
   );
@@ -480,7 +528,11 @@ export function ChatMessageActionsProvider({
   const isMountedRef = useRef(true);
 
   const copyAssistantMessage = useCallback(
-    ({ messageId, text }: { messageId: string; text: string }) => {
+    ({
+      messageId,
+      text,
+      notifySuccess,
+    }: Parameters<AssistantMessageActions['copyAssistantMessage']>[0]) => {
       const copyOperationId = ++copyOperationIdRef.current;
       void Clipboard.setStringAsync(text)
         .then(() => {
@@ -489,6 +541,9 @@ export function ChatMessageActionsProvider({
           }
 
           showCopiedMessageId(messageId);
+          if (notifySuccess) {
+            toast.show({ label: t('chat.messageActions.copied'), variant: 'success' });
+          }
         })
         .catch((error) => {
           logger.error('Copy assistant message failed', error as Error);
@@ -515,6 +570,7 @@ export function ChatMessageActionsProvider({
       isEditQuestionDisabled,
       isRetryDisabled,
       retryableMessageIds,
+      toolbarConfig,
     }),
     [
       answerableMessageIds,
@@ -527,6 +583,7 @@ export function ChatMessageActionsProvider({
       isEditQuestionDisabled,
       isRetryDisabled,
       retryableMessageIds,
+      toolbarConfig,
     ],
   );
   const actionsValue = useMemo(
@@ -540,6 +597,7 @@ export function ChatMessageActionsProvider({
       retryAssistantMessage,
       selectBranch,
       shareAssistantMessage,
+      openToolbarManager,
     }),
     [
       answerWithModel,
@@ -551,6 +609,7 @@ export function ChatMessageActionsProvider({
       retryAssistantMessage,
       selectBranch,
       shareAssistantMessage,
+      openToolbarManager,
     ],
   );
 
@@ -567,6 +626,15 @@ export function ChatMessageActionsProvider({
     <AssistantMessageActionsStateContext value={stateValue}>
       <AssistantMessageActionsContext value={actionsValue}>
         {children}
+        {isToolbarManagerMounted ? (
+          <AssistantToolbarManageSheet
+            config={toolbarConfig}
+            onChange={changeToolbarConfig}
+            onClose={closeToolbarManager}
+            onClosed={handleToolbarManagerClosed}
+            open={isAssistantToolbarEnabled && isToolbarManagerOpen}
+          />
+        ) : null}
       </AssistantMessageActionsContext>
     </AssistantMessageActionsStateContext>
   );

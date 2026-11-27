@@ -2,6 +2,8 @@ import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
+import appManifest from '../app.json';
+
 export type MobilePlatform = 'ios' | 'android';
 export type VerificationStatus = 'pass' | 'fail' | 'inconclusive';
 
@@ -58,8 +60,8 @@ export interface DoctorCheck {
 
 export const MIN_AGENT_DEVICE_VERSION = '0.21.27';
 export const DEV_APP_IDS: Record<MobilePlatform, string> = {
-  ios: 'com.cherryai.cherrystudio-app.dev',
-  android: 'com.cherryai.cherrystudio_app.dev',
+  ios: `${appManifest.expo.ios.bundleIdentifier}.dev`,
+  android: `${appManifest.expo.android.package}.dev`,
 };
 
 const RESIDENT_DEVICE_NAMES = new Set(['Cherry Test', 'Cherry_Test']);

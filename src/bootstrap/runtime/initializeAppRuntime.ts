@@ -2,6 +2,9 @@ import type { BackendServices } from '@/bootstrap/composition/createBackendServi
 import i18n, { initI18n } from '@/frontend/i18n';
 import { applyThemePreferences } from '@/frontend/utils/theme';
 import { measureStartupStage, startStartupStage } from '@/shared/core/logger/startupDiagnostics';
+import { IAGENT_ASSISTANT_AVATAR } from '@/shared/data/types/agent';
+import { isIagentEdition } from '@/shared/utils/iagentEdition';
+import { APP_LANGUAGES } from '@/shared/utils/languages';
 
 import { waitForStartupCoverPresented } from './startupCoverHandoff';
 
@@ -27,6 +30,11 @@ export async function initializeAppRuntime(services: BackendServices) {
   }
   await measureStartupStage('startup.i18n', () => initI18n(preferences.language));
   await measureStartupStage('startup.agent', () =>
-    services.agentData.createInitialAgent({ name: i18n.t('agent.default.name') }),
+    isIagentEdition()
+      ? services.agentData.createInitialAgent(
+          { name: i18n.t('iagent.defaultAgent'), avatar: IAGENT_ASSISTANT_AVATAR },
+          APP_LANGUAGES.map(({ value }) => i18n.getFixedT(value)('agent.default.name')),
+        )
+      : services.agentData.createInitialAgent({ name: i18n.t('agent.default.name') }),
   );
 }

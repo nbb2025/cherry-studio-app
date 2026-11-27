@@ -18,6 +18,7 @@ export type AgentToolApprovalMode = z.infer<typeof AgentToolApprovalModeSchema>;
 export const DEFAULT_AGENT_TOOL_APPROVAL_MODE: AgentToolApprovalMode = 'auto';
 export const CHERRY_AGENT_AVATAR = '🍒';
 export const DEEPSEEK_AGENT_AVATAR = 'builtin:deepseek';
+export const IAGENT_ASSISTANT_AVATAR = 'builtin:iagent';
 
 /** Emoji content only; managed file references still require the avatar image workflow. */
 export const AgentEmojiAvatarSchema = z

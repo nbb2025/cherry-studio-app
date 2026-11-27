@@ -14,6 +14,7 @@ user reaches and verifies product behavior.
 | --- | --- | --- |
 | [Onboarding](./onboarding.md) | Fresh install welcome, sign-in or skip, model source, notifications, permissions | `.maestro/flows/onboarding-skip.yaml` + `agent-device` |
 | [Chat Send And Stream](./chat-send-and-stream.md) | Compose, queue, stream replies, quotes, translations, user-question sheets | `agent-device` + Jest client/hook suites |
+| [iAgent Creative Studio](./iagent-creative.md) | Guest workspace, on-demand sign-in, image and video generation | `agent-device` + media protocol suites |
 | [Model Picker](./model-picker.md) | Open model drawer, search, filter capabilities, fast-scroll providers, select per-session model | `agent-device` + Jest suites |
 | [Provider Setup](./provider-setup.md) | Browse provider catalog, configure base URL/keys, test connection, add custom models | `agent-device` + Jest suites |
 | [Sidebar And Navigation](./sidebar-and-navigation.md) | Open/dock sidebar, switch devices, check cloud quota, search, recents, return navigation | `agent-device` + Jest suites |

@@ -5,7 +5,6 @@ import DatabaseIcon from '@cherrystudio/app-icons/icons/database';
 import InfoIcon from '@cherrystudio/app-icons/icons/info';
 import LockIcon from '@cherrystudio/app-icons/icons/lock';
 import MicIcon from '@cherrystudio/app-icons/icons/mic';
-import NetworkIcon from '@cherrystudio/app-icons/icons/network';
 import PackageIcon from '@cherrystudio/app-icons/icons/package';
 import Settings2Icon from '@cherrystudio/app-icons/icons/settings-2';
 import ShieldIcon from '@cherrystudio/app-icons/icons/shield';
@@ -20,6 +19,7 @@ import { accountSignInHref, organizationLabel, useAccount } from '@/frontend/app
 import { RouteHeader } from '@/frontend/appShell/header';
 import { CapabilityLabel } from '@/frontend/components/Policy';
 import { usePreference } from '@/frontend/data/hooks';
+import { isIagentEdition } from '@/shared/utils/iagentEdition';
 
 import { ProfileHero } from './components/ProfileHero';
 import { useProviderListNavigation } from './provider';
@@ -30,6 +30,7 @@ export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const [userName] = usePreference('app.user.name');
   const { state: account } = useAccount();
+  const isIagent = isIagentEdition();
   const organization = organizationLabel(account);
   const accountDetail = organization
     ? { label: organization.label, icon: organization.kind }
@@ -62,7 +63,7 @@ export default function SettingsScreen() {
               ? undefined
               : () => router.push(accountSignInHref('/settings'))
           }
-          userName={userName}
+          userName={isIagent ? account.name || userName : userName}
         />
         <View className="gap-6 px-4 pt-2">
           <Section>
@@ -89,12 +90,21 @@ export default function SettingsScreen() {
               leading={<PackageIcon className="size-4 text-foreground" />}
               onPress={() => router.push('/settings/model')}
             />
-            <Section.Item
-              label={t('aiUsage.title')}
-              leading={<ActivityIcon className="size-4 text-foreground" />}
-              onPress={() => router.push('/home/ai-usage')}
-              testID="settings-ai-usage"
-            />
+            {isIagent ? (
+              <Section.Item
+                label={t('iagent.prices.title')}
+                leading={<ActivityIcon className="size-4 text-foreground" />}
+                onPress={() => router.push('/settings/model-prices')}
+                testID="settings-iagent-prices"
+              />
+            ) : (
+              <Section.Item
+                label={t('aiUsage.title')}
+                leading={<ActivityIcon className="size-4 text-foreground" />}
+                onPress={() => router.push('/home/ai-usage')}
+                testID="settings-ai-usage"
+              />
+            )}
           </Section>
           <Section>
             <Section.Item
@@ -103,12 +113,14 @@ export default function SettingsScreen() {
               onPress={() => router.push('/settings/appearance')}
               testID="settings-general"
             />
-            <Section.Item
-              label={t('settings.voice.title')}
-              leading={<MicIcon className="size-4 text-foreground" />}
-              onPress={() => router.push('/settings/voice')}
-              testID="settings-voice"
-            />
+            {!isIagent ? (
+              <Section.Item
+                label={t('settings.voice.title')}
+                leading={<MicIcon className="size-4 text-foreground" />}
+                onPress={() => router.push('/settings/voice')}
+                testID="settings-voice"
+              />
+            ) : null}
             {Platform.OS === 'ios' || Platform.OS === 'android' ? (
               <Section.Item
                 label={t('settings.items.notifications')}
@@ -116,35 +128,34 @@ export default function SettingsScreen() {
                 onPress={() => router.push('/settings/notifications')}
               />
             ) : null}
-            <Section.Item
-              label={t('settings.items.permissions')}
-              leading={<LockIcon className="size-4 text-foreground" />}
-              onPress={() => router.push('/settings/permissions')}
-            />
-            <Section.Item
-              label={t('settings.items.deviceConnections')}
-              leading={<NetworkIcon className="size-4 text-foreground" />}
-              onPress={() => router.push('/settings/device-connections')}
-            />
+            {!isIagent ? (
+              <Section.Item
+                label={t('settings.items.permissions')}
+                leading={<LockIcon className="size-4 text-foreground" />}
+                onPress={() => router.push('/settings/permissions')}
+              />
+            ) : null}
           </Section>
-          <Section>
-            <Section.Item
-              label={t('settings.data.title')}
-              leading={<DatabaseIcon className="size-4 text-foreground" />}
-              onPress={() => router.push('/settings/data')}
-              testID="settings-data"
-            />
-            <Section.Item
-              label={t('settings.privacy.title')}
-              leading={<ShieldIcon className="size-4 text-foreground" />}
-              onPress={() => router.push('/settings/privacy')}
-            />
-            <Section.Item
-              label={t('settings.items.aboutUs')}
-              leading={<InfoIcon className="size-4 text-foreground" />}
-              onPress={() => router.push('/settings/about')}
-            />
-          </Section>
+          {!isIagent ? (
+            <Section>
+              <Section.Item
+                label={t('settings.data.title')}
+                leading={<DatabaseIcon className="size-4 text-foreground" />}
+                onPress={() => router.push('/settings/data')}
+                testID="settings-data"
+              />
+              <Section.Item
+                label={t('settings.privacy.title')}
+                leading={<ShieldIcon className="size-4 text-foreground" />}
+                onPress={() => router.push('/settings/privacy')}
+              />
+              <Section.Item
+                label={t('settings.items.aboutUs')}
+                leading={<InfoIcon className="size-4 text-foreground" />}
+                onPress={() => router.push('/settings/about')}
+              />
+            </Section>
+          ) : null}
         </View>
       </ScrollView>
     </View>

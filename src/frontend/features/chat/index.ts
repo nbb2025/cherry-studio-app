@@ -1,2 +1,2 @@
 export { ChatScreen } from './ChatScreen';
-export { ReadOnlyTaskSessionScreen } from './remote/ReadOnlyTaskSessionScreen';
+export { IagentChatScreen } from './IagentChatScreen';

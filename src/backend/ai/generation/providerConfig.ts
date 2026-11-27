@@ -43,7 +43,9 @@ import type {
   ProviderService,
   ResolvedProviderApiKey,
 } from '@/backend/data/services/ProviderService';
+import { isIagentEndpoint } from '@/backend/services/iagent/iagentCatalog';
 import { CLOUD_PROVIDER_ID, CloudAccessError } from '@/shared/contracts/cloud';
+import { IAGENT_ORIGIN, IagentError, iagentGroupId } from '@/shared/contracts/iagent';
 import type { ServingCredentialReceipt } from '@/shared/data/types/aiUsageRecord';
 import type { EndpointType, Model } from '@/shared/data/types/model';
 import type { AuthConfig, Provider } from '@/shared/data/types/provider';
@@ -223,6 +225,30 @@ export async function resolveProviderAiSdkConfig(
     resolveProviderConnection(provider, model, { resolvedEndpoint: options?.resolvedEndpoint });
   const connection = resolvedConnection;
   const { endpointType, baseUrl } = connection;
+
+  if (iagentGroupId(provider.id) !== null) {
+    if (!isIagentEndpoint(endpointType) || !provider.isEnabled || !model.isEnabled)
+      throw new IagentError('request');
+    const settings = {
+      apiKey: 'iagent-managed',
+      baseURL: `${IAGENT_ORIGIN}/v1`,
+      fetch: application
+        .get('IagentModelRuntime')
+        .createModelFetch(provider.id, endpointType, connection.wireModelId),
+    };
+    return {
+      config:
+        endpointType === ENDPOINT_TYPE.ANTHROPIC_MESSAGES
+          ? { providerId: 'anthropic', providerSettings: settings }
+          : endpointType === ENDPOINT_TYPE.OPENAI_RESPONSES
+            ? { providerId: 'openai', providerSettings: settings }
+            : {
+                providerId: 'openai-compatible',
+                providerSettings: { ...settings, name: provider.id, includeUsage: true },
+              },
+      credentialReceipt: { attribution: 'unknown' },
+    };
+  }
 
   if (provider.id === CLOUD_PROVIDER_ID) {
     if (

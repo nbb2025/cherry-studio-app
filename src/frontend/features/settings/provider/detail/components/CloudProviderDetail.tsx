@@ -29,7 +29,7 @@ export function CloudProviderDetail() {
     press,
     refresh,
     signInAgain,
-  } = useCloudModelBrowser(!isEnterpriseProfile());
+  } = useCloudModelBrowser(!isEnterpriseProfile(), undefined, { autoRefresh: false });
   useFocusEffect(
     useCallback(() => {
       refresh();
@@ -77,7 +77,9 @@ export function CloudProviderDetail() {
           title={t(
             state.accountIssue === 'account_disabled'
               ? 'cloud.accountDisabled'
-              : 'settings.provider.models.management.loadFailed',
+              : state.accountIssue === 'reauth_required'
+                ? 'cloud.sessionExpired'
+                : 'settings.provider.models.management.loadFailed',
           )}
           primaryAction={{
             children: t(

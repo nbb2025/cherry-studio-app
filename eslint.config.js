@@ -123,7 +123,14 @@ const tombstonePatterns = [
   },
 ];
 
+const directExpoHapticsImport = {
+  name: 'expo-haptics',
+  message:
+    'Use haptics or triggerHaptic from @cherrystudio/ui/haptics for cross-platform feedback.',
+};
+
 const retiredImports = [
+  directExpoHapticsImport,
   {
     name: 'heroui-native/toast',
     message: 'Use Toast and useToast from @cherrystudio/ui/components.',
@@ -148,6 +155,14 @@ const retiredImports = [
     message:
       'Resource interfaces moved to shared/data; Backend now contains workflow/session modules only.',
   },
+];
+
+// Pre-existing callers predating `@cherrystudio/ui/haptics`. Do not add new files; shrink by migrating.
+const legacyDirectHapticsFiles = [
+  'src/frontend/components/ModelPicker/components/ModelPickerFastScroller.tsx',
+  'src/frontend/features/chat/components/ChatInput/effortSlider/components/EffortSlider.tsx',
+  'src/frontend/features/chat/voice/DictationCancelAction.tsx',
+  'src/frontend/features/chat/voice/ChatInputPrimaryAction.tsx',
 ];
 
 const aliasRoots = (roots) =>
@@ -442,7 +457,6 @@ const legacyPageUseEffectLimits = {
   'src/frontend/features/chat/composer/useComposerHandoffAppend.ts': 1,
   'src/frontend/features/chat/hooks/useConversationResourceValue.ts': 1,
   'src/frontend/features/chat/quotes/ChatQuoteProvider.tsx': 2,
-  'src/frontend/features/chat/remote/ReadOnlyTaskSessionScreen.tsx': 1,
   'src/frontend/features/chat/remote/RemoteChatScreen.tsx': 1,
   'src/frontend/features/chat/remote/RemoteComposer.tsx': 4,
   'src/frontend/features/chat/remote/useRemoteDraftPersistence.ts': 2,
@@ -587,6 +601,19 @@ module.exports = defineConfig([
         {
           paths: retiredImports,
           patterns: tombstonePatterns.filter((pattern) => pattern !== universalDataTombstone),
+        },
+      ],
+    },
+  },
+  {
+    name: 'legacy-direct-haptics-allowlist',
+    files: legacyDirectHapticsFiles,
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: retiredImports.filter((entry) => entry !== directExpoHapticsImport),
+          patterns: tombstonePatterns,
         },
       ],
     },

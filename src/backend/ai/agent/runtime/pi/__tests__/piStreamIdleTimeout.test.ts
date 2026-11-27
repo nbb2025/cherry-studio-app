@@ -1,7 +1,10 @@
+import { ENDPOINT_TYPE } from '@cherrystudio/provider-registry';
 import type { AssistantMessage, AssistantMessageEvent, Model } from '@earendil-works/pi-ai';
 import { AssistantMessageEventStream } from '@earendil-works/pi-ai/utils/event-stream';
+import { isRetryableAssistantError } from '@earendil-works/pi-ai/utils/retry';
 import { normalizeContext } from '@earendil-works/pi-ai/utils/transcript';
 
+import { bindPiStream, resolvePiApiAdapter } from '../piApiAdapters';
 import { withPiApiKeyFallback } from '../piApiKeyFallback';
 import type { PiStreamFn as StreamFn } from '../piModelTypes';
 import { withPiStreamIdleTimeout } from '../piStreamIdleTimeout';
@@ -91,6 +94,61 @@ async function collect(stream: AssistantMessageEventStream) {
 describe('Pi stream idle timeout', () => {
   beforeEach(() => jest.useFakeTimers());
   afterEach(() => jest.useRealTimers());
+
+  test('finite body bytes without EOF do not renew the existing response deadline', async () => {
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    let signal: AbortSignal | undefined;
+    const cancel = jest.fn();
+    const fetch = jest.fn(async (_input: unknown, init?: RequestInit) => {
+      signal = init?.signal ?? undefined;
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start(value) {
+            controller = value;
+          },
+          cancel,
+        }),
+        { headers: { 'content-type': 'application/json' } },
+      );
+    });
+    const adapter = resolvePiApiAdapter(ENDPOINT_TYPE.OPENAI_CHAT_COMPLETIONS);
+    const bound = await bindPiStream(
+      {
+        ...adapter,
+        loadStreamSimple: async () =>
+          jest.requireActual('@earendil-works/pi-ai/api/openai-completions').streamSimple,
+      },
+      {
+        shouldStream: false,
+        apiKey: 'key',
+        fetch,
+        headers: {},
+        maxRetries: 0,
+        maxTokens: 256,
+      },
+    );
+    const onProviderStreamEvent = jest.fn();
+    const stream = await withPiStreamIdleTimeout(bound)(MODEL, normalizeContext({ messages: [] }), {
+      onProviderStreamEvent,
+    });
+    await jest.advanceTimersByTimeAsync(0);
+    controller.enqueue(new TextEncoder().encode('{"choices":'));
+    await jest.advanceTimersByTimeAsync(IDLE_MS - 1);
+    expect(signal?.aborted).toBe(false);
+    controller.enqueue(new TextEncoder().encode('['));
+    await jest.advanceTimersByTimeAsync(1);
+    const { result, events } = await collect(stream);
+    expect(result).toMatchObject({
+      stopReason: 'error',
+      errorMessage: 'The model response timed out after 1800 seconds without data.',
+    });
+    expect(events.some((event) => event.type === 'text_delta')).toBe(false);
+    expect(onProviderStreamEvent).not.toHaveBeenCalled();
+    expect(signal?.aborted).toBe(true);
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(jest.getTimerCount()).toBe(0);
+  });
 
   test('provider search progress renews idle time before any answer text', async () => {
     const source = controlledSource();
@@ -345,6 +403,40 @@ describe('Pi stream idle timeout', () => {
     });
     expect(jest.getTimerCount()).toBe(0);
   });
+
+  test.each([true, false])(
+    'preserves explicit fetch retryability and timeout facts through an SDK wrapper: %s',
+    async (retryable) => {
+      const failure = Object.assign(
+        new Error('Cloud response headers timed out after 60 seconds.'),
+        {
+          name: 'TimeoutError',
+          code: 'cloud_response_headers_timeout',
+          retryable,
+        },
+      );
+      const stream = await withPiStreamIdleTimeout((_model, _context, options) => {
+        options?.reportFetchFailure?.(failure);
+        const source = new AssistantMessageEventStream();
+        source.push({
+          type: 'error',
+          reason: 'error',
+          error: { ...message('', 'error'), errorMessage: 'Connection error.' },
+        });
+        source.end();
+        return source;
+      })(MODEL, normalizeContext({ messages: [] }));
+
+      const result = await stream.result();
+      expect(result).toMatchObject({ stopReason: 'error', errorMessage: failure.message });
+      expect(result.diagnostics?.at(-1)).toMatchObject({
+        error: { name: 'TimeoutError', code: 'cloud_response_headers_timeout' },
+        details: { retryable },
+      });
+      expect(isRetryableAssistantError(result)).toBe(retryable);
+      expect(jest.getTimerCount()).toBe(0);
+    },
+  );
 
   test('terminalizes an iterator failure instead of leaving an unhandled rejection', async () => {
     const source = new AssistantMessageEventStream();

@@ -1,29 +1,62 @@
+import { Keyboard } from 'react-native';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 import type { MessageListItem } from '@/frontend/components/Message';
 import { PolicyScope } from '@/frontend/components/Policy';
 import { agentPolicy } from '@/shared/data/managedPolicy';
+import {
+  DEFAULT_ASSISTANT_MESSAGE_TOOLBAR_CONFIG,
+  type AssistantMessageToolbarConfig,
+} from '@/shared/data/types/assistantMessageToolbar';
 import type { UniqueModelId } from '@/shared/data/types/model';
 
+import {
+  ChatShareSelectionStoreContext,
+  createChatShareSelectionStore,
+} from '../../../../share/chatShareSelection';
 import { AssistantMessageActionsProvider } from '../../context/AssistantMessageActionsProvider';
 import { copyAssistantMessageText } from '../../utils/copyAssistantMessageText';
+import * as speechAssistantModule from '../../utils/speechAssistantMessageText';
 import { AssistantMessageToolbar } from '../AssistantMessageToolbar';
 
+jest.mock('@/frontend/appShell/account', () => {
+  const account = { getState: () => ({ isSignedIn: false }) };
+  return { useAccount: () => ({ account }) };
+});
+
 jest.mock('../../translation/MessageTranslationProvider', () => ({
-  useMessageTranslation: () => undefined,
+  useMessageTranslation: () => mockMessageTranslation,
   useMessageTranslationStore: () => null,
 }));
 
+const mockTranslationToggle = jest.fn();
+const mockTranslationStart = jest.fn(async () => undefined);
+let mockMessageTranslation:
+  | {
+      state: { status: 'idle' | 'success'; visible: boolean };
+      source: { messageId: string };
+      store: { toggle: typeof mockTranslationToggle; start: typeof mockTranslationStart };
+    }
+  | undefined;
+
 const mockToggleSpeech = jest.fn();
-const mockSpeech = jest.fn((_messageId: string, _text: string | undefined) => ({
-  isSpeaking: false,
+let mockSpeechPhase: 'idle' | 'preparing' | 'playing';
+const mockSpeech = jest.fn((_messageId: string, _text: string | (() => string)) => ({
+  phase: mockSpeechPhase,
+  isSpeaking: mockSpeechPhase !== 'idle',
   toggle: mockToggleSpeech,
 }));
 jest.mock('../../../../voice/useMessageSpeech', () => ({
-  useMessageSpeech: (messageId: string, text: string | undefined) => mockSpeech(messageId, text),
+  useMessageSpeech: (messageId: string, text: string | (() => string)) =>
+    mockSpeech(messageId, text),
+}));
+const mockUseThemeColor = jest.fn(() => 'foreground-test');
+jest.mock('@/frontend/hooks/useThemeColor', () => ({
+  useThemeColor: () => mockUseThemeColor(),
 }));
 
 const mockSetStringAsync = jest.fn(async (_text: string) => undefined);
+const mockToastShow = jest.fn();
 const mockRetryMessage = jest.fn(async (_input: unknown): Promise<void> => undefined);
 const mockShare = jest.fn();
 const mockAnswerWith = jest.fn();
@@ -55,9 +88,11 @@ jest.mock('@cherrystudio/ui/components', () => {
   return {
     ActionMenu: ({ children, items }: { children: unknown; items: unknown }) =>
       createElement('ActionMenu', { items }, children),
-    Button: (props: object) => createElement('Button', props),
+    Button: (props: { icon?: unknown }) => createElement('Button', props, props.icon as never),
+    OptionPickerBottomSheet: (props: object) => createElement('OptionPickerBottomSheet', props),
+    Spinner: (props: object) => createElement('Spinner', props),
     useAlert: () => ({ alert: { confirm: mockAlertConfirm } }),
-    useToast: () => ({ toast: { show: jest.fn() } }),
+    useToast: () => ({ toast: { show: mockToastShow } }),
   };
 });
 
@@ -83,10 +118,16 @@ jest.mock('../../utils/copyAssistantMessageText', () => {
 
 describe('AssistantMessageToolbar', () => {
   let renderer: ReactTestRenderer | undefined;
+  let selectionStore: ReturnType<typeof createChatShareSelectionStore>;
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockToolbarConfig = DEFAULT_ASSISTANT_MESSAGE_TOOLBAR_CONFIG;
+    mockSetToolbarConfig.mockResolvedValue(undefined);
     mockIsSessionBusy = false;
+    mockMessageTranslation = undefined;
+    mockSpeechPhase = 'idle';
+    selectionStore = createChatShareSelectionStore();
   });
 
   afterEach(() => {
@@ -167,6 +208,7 @@ describe('AssistantMessageToolbar', () => {
     expect(
       renderer?.root.findByProps({ testID: 'assistant-message-copy' }).props.icon.props.className,
     ).toBe('text-success');
+    expect(mockToastShow).not.toHaveBeenCalled();
   });
 
   test('keeps the direct branch action reachable on a message with nothing to copy', () => {
@@ -240,15 +282,68 @@ describe('AssistantMessageToolbar', () => {
     expect(mockShare).toHaveBeenCalledWith('assistant-1', undefined);
   });
 
-  test('reads the answer text aloud from the toolbar', () => {
-    renderToolbar(createMessage('success', 'Answer'));
+  test('reads the answer text aloud from the toolbar lazily without full parsing at mount', () => {
+    const extractSpy = jest.spyOn(speechAssistantModule, 'speechAssistantMessageText');
+    renderToolbar(createMessage('success', 'Plain prose answer'));
+    expect(mockUseThemeColor).not.toHaveBeenCalled();
+    expect(extractSpy).not.toHaveBeenCalled();
+    extractSpy.mockRestore();
 
-    expect(mockSpeech).toHaveBeenLastCalledWith('assistant-1', 'Answer');
+    renderToolbar(createMessage('success', '**Answer** <https://example.com>'));
+    expect(mockUseThemeColor).not.toHaveBeenCalled();
+
+    const [id, textOrGetter] = mockSpeech.mock.lastCall!;
+    expect(id).toBe('assistant-1');
+    expect(typeof textOrGetter).toBe('function');
+    expect(typeof textOrGetter === 'function' ? textOrGetter() : textOrGetter).toBe('Answer');
     const button = renderer?.root.findByProps({ testID: 'assistant-message-read-aloud' });
     expect(button?.props.accessibilityLabel).toBe('voice.speech.start');
     act(() => button?.props.onPress());
     expect(mockToggleSpeech).toHaveBeenCalledTimes(1);
-    expect(menuItem('read-aloud')).toBeUndefined();
+    expect(menuItem('readAloud')).toBeUndefined();
+  });
+
+  test('hides Read Aloud for a settled answer with no speakable text', () => {
+    renderToolbar(createMessage('success', '![image](https://example.com/only.png)'));
+    expect(renderer!.root.findAllByProps({ testID: 'assistant-message-read-aloud' })).toHaveLength(
+      0,
+    );
+  });
+
+  test('exposes the cancellable button as busy and hides its spinner from accessibility', () => {
+    mockSpeechPhase = 'preparing';
+    renderToolbar(createMessage('success', ''));
+    expect(mockUseThemeColor).toHaveBeenCalledTimes(1);
+    const button = renderer!.root.findByProps({ testID: 'assistant-message-read-aloud' });
+    expect(button.props).toMatchObject({
+      accessibilityLabel: 'voice.speech.stop',
+      accessibilityState: { busy: true },
+    });
+    expect(button.props.loading).toBeFalsy();
+    expect(button.props.disabled).toBeFalsy();
+    const spinner = renderer!.root.findByType('Spinner' as never);
+    expect(spinner.props).toMatchObject({
+      accessibilityElementsHidden: true,
+      accessible: false,
+      importantForAccessibility: 'no-hide-descendants',
+      color: 'foreground-test',
+    });
+    act(() => button.props.onPress());
+    expect(mockToggleSpeech).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([
+    ['idle', 'voice.speech.start'],
+    ['preparing', 'voice.speech.preparingStop'],
+    ['playing', 'voice.speech.stop'],
+  ] as const)('uses the %s speech label in the overflow menu', (phase, label) => {
+    mockToolbarConfig = { pinned: ['copy'], overflow: ['readAloud'] };
+    mockSpeechPhase = phase;
+    renderToolbar(createMessage('success', phase === 'idle' ? 'Answer' : ''));
+    const action = menuItem('readAloud');
+    expect(action?.label).toBe(label);
+    act(() => action?.onPress());
+    expect(mockToggleSpeech).toHaveBeenCalledTimes(1);
   });
 
   test('adds an answer from the model chosen with @', async () => {
@@ -297,6 +392,158 @@ describe('AssistantMessageToolbar', () => {
     expect(renderer?.root.findAllByType('ModelPickerDrawer' as never)).toHaveLength(0);
   });
 
+  test('renders custom pinned order and all moved actions in overflow order', async () => {
+    mockToolbarConfig = {
+      pinned: ['share', 'translate', 'edit'],
+      overflow: ['fork', 'answerWith', 'readAloud', 'copy', 'retry', 'delete'],
+    };
+    mockMessageTranslation = {
+      state: { status: 'idle', visible: false },
+      source: { messageId: 'assistant-1' },
+      store: { toggle: mockTranslationToggle, start: mockTranslationStart },
+    };
+    renderToolbar({ ...createMessage('success', 'Answer'), turnId: 'turn-1' });
+    expect(renderer!.root.findAllByType('Button').map((button) => button.props.testID)).toEqual([
+      'assistant-message-share',
+      'assistant-message-translate',
+      'assistant-message-edit',
+      'assistant-message-more',
+    ]);
+    expect(
+      renderer!.root.findByType('ActionMenu').props.items.map((item: { id: string }) => item.id),
+    ).toEqual(['fork', 'answerWith', 'readAloud', 'copy', 'retry', 'delete', 'manage']);
+    expect(renderer!.root.findByProps({ testID: 'assistant-message-edit' }).props.disabled).toBe(
+      false,
+    );
+    act(() => renderer!.root.findByProps({ testID: 'assistant-message-share' }).props.onPress());
+    expect(mockShare).toHaveBeenCalledWith('assistant-1', undefined);
+    act(() => menuItem('readAloud')!.onPress());
+    expect(mockToggleSpeech).toHaveBeenCalledTimes(1);
+    await act(async () => menuItem('copy')!.onPress());
+    expect(mockSetStringAsync).toHaveBeenCalledWith('Answer');
+    expect(mockToastShow).toHaveBeenCalledTimes(1);
+    expect(mockToastShow).toHaveBeenCalledWith({
+      label: 'chat.messageActions.copied',
+      variant: 'success',
+    });
+    act(() => menuItem('fork')!.onPress());
+    expect(mockForkSession).toHaveBeenCalled();
+    act(() => menuItem('answerWith')!.onPress());
+    expect(renderer!.root.findByType('ModelPickerDrawer').props.open).toBe(true);
+  });
+
+  test('omits unavailable pinned actions without promoting overflow actions', () => {
+    mockToolbarConfig = {
+      pinned: ['copy', 'translate', 'retry'],
+      overflow: ['share', 'fork', 'edit', 'readAloud', 'answerWith', 'delete'],
+    };
+    renderToolbar(createMessage('success', '   '), false);
+    expect(renderer!.root.findAllByType('Button').map((button) => button.props.testID)).toEqual([
+      'assistant-message-more',
+    ]);
+    expect(menuItem('share')).toBeDefined();
+  });
+
+  test('keeps Manage last in its own group and opens the provider manager', () => {
+    renderToolbar({ ...createMessage('success', 'Answer'), turnId: 'turn-1' });
+    expect(renderer!.root.findAllByType('AssistantToolbarManageSheet')).toHaveLength(0);
+    const items = renderer!.root.findByType('ActionMenu').props.items;
+    expect(items.at(-1)).toMatchObject({
+      id: 'manage',
+      group: 'manage',
+      label: 'chat.messageActions.manage',
+    });
+    expect(items.slice(0, -1).every((item: { group: string }) => item.group === 'actions')).toBe(
+      true,
+    );
+    act(() => items.at(-1).onPress());
+    expect(renderer!.root.findByType('AssistantToolbarManageSheet').props.open).toBe(true);
+    act(() => renderer!.root.findByType('AssistantToolbarManageSheet').props.onClose());
+    expect(renderer!.root.findByType('AssistantToolbarManageSheet').props.open).toBe(false);
+    act(() => renderer!.root.findByType('AssistantToolbarManageSheet').props.onClosed());
+    expect(renderer!.root.findAllByType('AssistantToolbarManageSheet')).toHaveLength(0);
+  });
+
+  test('closes the manager when share selection disables the toolbar', () => {
+    mockShare.mockImplementationOnce(selectionStore.beginSelection);
+    renderToolbar(createMessage('success', 'Answer'));
+    act(() => menuItem('manage')!.onPress());
+    expect(renderer!.root.findByType('AssistantToolbarManageSheet').props.open).toBe(true);
+
+    act(() => menuItem('share')!.onPress());
+    expect(renderer!.root.findByType('AssistantToolbarManageSheet').props.open).toBe(false);
+    expect(renderer!.root.findAllByType('ActionMenu')).toHaveLength(0);
+    act(() => renderer!.root.findByType('AssistantToolbarManageSheet').props.onClosed());
+    act(() => selectionStore.cancelSelection());
+    expect(renderer!.root.findAllByType('AssistantToolbarManageSheet')).toHaveLength(0);
+    expect(menuItem('manage')).toBeDefined();
+  });
+
+  test.each(['pinned', 'overflow'] as const)(
+    'opens the language picker from %s translation and starts the selected language',
+    async (zone) => {
+      mockToolbarConfig =
+        zone === 'pinned'
+          ? {
+              pinned: ['translate'],
+              overflow: [
+                'copy',
+                'readAloud',
+                'retry',
+                'answerWith',
+                'fork',
+                'edit',
+                'share',
+                'delete',
+              ],
+            }
+          : DEFAULT_ASSISTANT_MESSAGE_TOOLBAR_CONFIG;
+      mockMessageTranslation = {
+        state: { status: 'idle', visible: false },
+        source: { messageId: 'assistant-1' },
+        store: { toggle: mockTranslationToggle, start: mockTranslationStart },
+      };
+      const dismiss = jest.spyOn(Keyboard, 'dismiss').mockImplementation(() => {});
+      renderToolbar(createMessage('success', 'Answer'));
+      act(() =>
+        zone === 'pinned'
+          ? renderer!.root.findByProps({ testID: 'assistant-message-translate' }).props.onPress()
+          : menuItem('translate')!.onPress(),
+      );
+      expect(dismiss).toHaveBeenCalled();
+      const picker = renderer!.root.findByType('OptionPickerBottomSheet');
+      expect(picker.props.open).toBe(true);
+      await act(async () => picker.props.onValueChange('ja-JP'));
+      expect(mockTranslationStart).toHaveBeenCalledWith(mockMessageTranslation.source, 'ja-JP');
+      act(() => picker.props.onClose());
+      expect(renderer!.root.findAllByType('OptionPickerBottomSheet')).toHaveLength(0);
+      dismiss.mockRestore();
+    },
+  );
+
+  test.each([true, false])('toggles an existing inline translation (visible=%p)', (visible) => {
+    mockToolbarConfig = {
+      pinned: ['translate'],
+      overflow: ['copy', 'readAloud', 'retry', 'answerWith', 'fork', 'edit', 'share', 'delete'],
+    };
+    mockMessageTranslation = {
+      state: { status: 'success', visible },
+      source: { messageId: 'assistant-1' },
+      store: { toggle: mockTranslationToggle, start: mockTranslationStart },
+    };
+    renderToolbar(createMessage('success', 'Answer'));
+    const button = renderer!.root.findByProps({ testID: 'assistant-message-translate' });
+    expect(button.props.accessibilityLabel).toBe(
+      visible ? 'chat.translation.hide' : 'chat.translation.show',
+    );
+    expect(button.props.icon.props.className).toBe(
+      visible ? 'text-foreground' : 'text-muted-foreground',
+    );
+    act(() => button.props.onPress());
+    expect(mockTranslationToggle).toHaveBeenCalledWith(mockMessageTranslation.source);
+    expect(renderer!.root.findAllByType('OptionPickerBottomSheet')).toHaveLength(0);
+  });
+
   function menuItem(id: string) {
     return (
       renderer!.root.findByType('ActionMenu' as never).props.items as {
@@ -318,6 +565,7 @@ describe('AssistantMessageToolbar', () => {
       const toolbar = (
         <AssistantMessageActionsProvider
           isAssistantToolbarEnabled
+          sessionId="session-1"
           onShare={mockShare}
           snapshot={{
             title: 'Arithmetic drills',
@@ -333,6 +581,9 @@ describe('AssistantMessageToolbar', () => {
               completeness: 'complete',
               display: message,
               actions: {
+                editAnswer: {
+                  availability: { state: 'enabled' },
+                },
                 ...(retryable
                   ? {
                       answerWith: {
@@ -384,7 +635,11 @@ describe('AssistantMessageToolbar', () => {
         </AssistantMessageActionsProvider>
       );
       const policy = agentPolicy({ isManaged: Boolean(allowedModelIds), allowedModelIds });
-      renderer = create(<PolicyScope policy={policy}>{toolbar}</PolicyScope>);
+      renderer = create(
+        <ChatShareSelectionStoreContext value={selectionStore}>
+          <PolicyScope policy={policy}>{toolbar}</PolicyScope>
+        </ChatShareSelectionStoreContext>,
+      );
     });
   }
 });
@@ -398,3 +653,17 @@ function createMessage(status: MessageListItem['status'], text: string): Message
     status,
   };
 }
+
+let mockToolbarConfig: AssistantMessageToolbarConfig;
+const mockSetToolbarConfig = jest.fn(
+  async (_value: AssistantMessageToolbarConfig, _options: unknown) => undefined,
+);
+const mockUsePreference = jest.fn((_key: string) => [mockToolbarConfig, mockSetToolbarConfig]);
+jest.mock('@/frontend/data/hooks', () => ({
+  usePreference: (key: string) => mockUsePreference(key),
+}));
+
+jest.mock('../AssistantToolbarManageSheet', () => ({
+  AssistantToolbarManageSheet: (props: object) =>
+    jest.requireActual('react').createElement('AssistantToolbarManageSheet', props),
+}));

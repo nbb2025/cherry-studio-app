@@ -1,3 +1,4 @@
+import { ENDPOINT_TYPE } from '@cherrystudio/provider-registry';
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
 import type { Api, AssistantMessage, Model, TranscriptContext } from '@earendil-works/pi-ai';
 import { streamSimple as streamAnthropic } from '@earendil-works/pi-ai/api/anthropic-messages';
@@ -21,13 +22,15 @@ import {
 import { ZodError } from 'zod';
 
 import { AgentProtocolError } from '@/shared/contracts/agent';
+import { CLOUD_PROVIDER_ID } from '@/shared/contracts/cloud';
+import { createUniqueModelId } from '@/shared/data/types/model';
 
 import {
   buildAgentSystemPrompt,
   buildInitialSkillInstructions,
 } from '../../../host/agentSystemPrompt';
 import type { SkillTurnEntry, SkillTurnScope } from '../../../host/skillScope';
-import { formatMessageQuote } from '../../../host/turnRuntimeInput';
+import { formatMessageQuote, toRuntimeHistory } from '../../../host/turnRuntimeInput';
 import { createSkillTools } from '../../../tools/skill/skillTools';
 import { createLoadWorkflowTool, getPluginWorkflows } from '../../../tools/workflowTool';
 import type {
@@ -83,6 +86,27 @@ function input(id: string): RuntimeDurableSubmission {
     input: [{ type: 'text', text: `Question ${id}` }],
     metadata: { originalText: `Question ${id}` },
   };
+}
+
+function cherryHistory(modelId: string, reasoning: string) {
+  return toRuntimeHistory([
+    {
+      id: 'answer',
+      sessionId: lane.sessionId,
+      turnId: 'past',
+      role: 'assistant',
+      status: 'success',
+      modelId: createUniqueModelId(CLOUD_PROVIDER_ID, modelId),
+      parts: [
+        { type: 'reasoning', id: 'thought', text: reasoning, state: 'done' },
+        { type: 'text', id: 'answer-text', text: 'Saved answer.', state: 'done' },
+      ],
+      createdAt: '2026-11-25T00:00:00Z',
+      updatedAt: '2026-11-25T00:00:00Z',
+      inferenceSnapshot: null,
+      stats: null,
+    },
+  ]);
 }
 
 function deferred<Value>() {
@@ -191,6 +215,528 @@ async function submitAndWait(
 }
 
 describe('Persistent Agent facade', () => {
+  test.each([false, true])(
+    'publishes partial text before the terminal event only when shouldStream=%s',
+    async (shouldStream) => {
+      const state = fixture();
+      const waitingForTerminal = deferred<void>();
+      const releaseTerminal = deferred<void>();
+      const completed = deferred<void>();
+      const model = {
+        ...wire,
+        api: 'openai-completions' as const,
+        baseUrl: 'https://provider.test/v1',
+      };
+      const usage = { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 };
+      const response = shouldStream
+        ? new Response(
+            'data: {"choices":[{"delta":{"content":"Answer"},"finish_reason":"stop"}]}\n\n' +
+              `data: ${JSON.stringify({ choices: [], usage })}\n\ndata: [DONE]\n\n`,
+            { headers: { 'content-type': 'text/event-stream' } },
+          )
+        : new Response(
+            JSON.stringify({
+              choices: [{ message: { content: 'Answer' }, finish_reason: 'stop' }],
+              usage,
+            }),
+            { headers: { 'content-type': 'application/json' } },
+          );
+      const fetch = jest.fn(async (_input: unknown, _init?: RequestInit) => response);
+      const streamFn = await bindPiStream(
+        {
+          ...resolvePiApiAdapter(ENDPOINT_TYPE.OPENAI_CHAT_COMPLETIONS),
+          loadStreamSimple: async () => streamCompletions as PiStreamFn,
+        },
+        { shouldStream, apiKey: 'key', fetch, headers: {}, maxRetries: 0, maxTokens: 256 },
+      );
+      const resolveModel = state.dependencies.resolveModel;
+      state.dependencies.resolveModel = async (...args) => ({
+        ...(await resolveModel(...args)),
+        model,
+        shouldStream,
+        streamFn: (model, context, options) =>
+          streamFn(model, context, {
+            ...options,
+            onProviderStreamEvent: async (event, wire) => {
+              await options?.onProviderStreamEvent?.(event, wire);
+              if ((event as { choices?: unknown[] }).choices?.length === 0) {
+                waitingForTerminal.resolve();
+                await releaseTerminal.promise;
+              }
+            },
+          }),
+      });
+      const runtime = state.create();
+      await runtime.initialize(state.database, state.ports);
+      await runtime.ensureConversation(seed);
+      const updates: { status: string; text: string; state?: string }[] = [];
+      const observation = await runtime.observe(lane, (event) => {
+        if (event.type !== 'turn.updated' || event.turn.identity.requestId !== 'publication')
+          return;
+        const text = event.turn.parts.find((part) => part.type === 'text');
+        if (text?.type === 'text' && text.text)
+          updates.push({ status: event.turn.status, text: text.text, state: text.state });
+        if (event.turn.status === 'completed') completed.resolve();
+      });
+      try {
+        await runtime.submit(lane, input('publication'));
+        await waitingForTerminal.promise;
+        // Pi schedules a trailing progress commit after 100 ms.
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        const expected = shouldStream
+          ? [{ status: 'running', text: 'Answer', state: 'streaming' }]
+          : [];
+        expect(updates).toEqual(expected);
+        releaseTerminal.resolve();
+        await completed.promise;
+        expect(updates).toEqual([
+          ...expected,
+          { status: 'completed', text: 'Answer', state: 'done' },
+        ]);
+        expect(fetch).toHaveBeenCalledTimes(1);
+        expect(JSON.parse(String(fetch.mock.calls[0][1]?.body))).toMatchObject({
+          stream: shouldStream,
+        });
+      } finally {
+        releaseTerminal.resolve();
+        await observation.unsubscribe();
+        await runtime.close();
+      }
+    },
+  );
+
+  test('finite refusal remains visible in durable chat projection after reopening', async () => {
+    const state = fixture();
+    const model = {
+      ...wire,
+      api: 'openai-completions' as const,
+      baseUrl: 'https://provider.test/v1',
+      compat: { supportsFinishReason: false },
+    };
+    const fetch = jest.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            choices: [{ message: { content: null, refusal: 'Declined' }, finish_reason: 'stop' }],
+          }),
+          { headers: { 'content-type': 'application/json' } },
+        ),
+    );
+    const streamFn = await bindPiStream(
+      {
+        ...resolvePiApiAdapter(ENDPOINT_TYPE.OPENAI_CHAT_COMPLETIONS),
+        loadStreamSimple: async () => streamCompletions as PiStreamFn,
+      },
+      { shouldStream: false, apiKey: 'key', fetch, headers: {}, maxRetries: 0, maxTokens: 256 },
+    );
+    const resolveModel = state.dependencies.resolveModel;
+    state.dependencies.resolveModel = async (...args) => ({
+      ...(await resolveModel(...args)),
+      model,
+      streamFn,
+    });
+    let runtime = state.create();
+    await runtime.initialize(state.database, state.ports);
+    try {
+      await runtime.ensureConversation(seed);
+      await submitAndWait(runtime, input('refusal'));
+      expect((await runtime.message(lane, 'answer-refusal'))?.turn).toMatchObject({
+        status: 'completed',
+        parts: [{ type: 'text', text: 'Declined' }],
+      });
+      await runtime.close();
+      runtime = state.create();
+      await runtime.initialize(state.database, state.ports);
+      expect((await runtime.message(lane, 'answer-refusal'))?.turn.parts).toEqual([
+        expect.objectContaining({ type: 'text', text: 'Declined' }),
+      ]);
+      expect(fetch).toHaveBeenCalledTimes(1);
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  test.each([
+    {
+      contentType: 'text/event-stream',
+      body: 'data: [DONE]\n\n',
+      code: 'non_streaming_mode_unsupported',
+    },
+    { contentType: 'application/json', body: 'bad JSON', code: 'non_streaming_response_invalid' },
+  ])(
+    'preserves non-retryable blocking compaction failure $code after reopening',
+    async ({ contentType, body, code }) => {
+      const state = fixture();
+      const model = {
+        ...wire,
+        api: 'openai-completions' as const,
+        baseUrl: 'https://provider.test/v1',
+        contextWindow: 4096,
+        maxTokens: 256,
+      };
+      state.dependencies.preflightModel = async () => ({
+        contextWindow: model.contextWindow,
+        maxInputTokens: 1024,
+        maxOutputTokens: model.maxTokens,
+        inputModalities: ['text'],
+        supportsTools: true,
+      });
+      const fetch = jest.fn(
+        async (_input: unknown, _init?: RequestInit) =>
+          new Response(body, { headers: { 'content-type': contentType } }),
+      );
+      const streamFn = await bindPiStream(
+        {
+          ...resolvePiApiAdapter(ENDPOINT_TYPE.OPENAI_CHAT_COMPLETIONS),
+          loadStreamSimple: async () => streamCompletions as PiStreamFn,
+        },
+        { shouldStream: false, apiKey: 'key', fetch, headers: {}, maxRetries: 0, maxTokens: 256 },
+      );
+      const resolveModel = state.dependencies.resolveModel;
+      state.dependencies.resolveModel = async (...args) => ({
+        ...(await resolveModel(...args)),
+        model,
+        streamFn,
+        shouldStream: false,
+      });
+      let runtime = state.create();
+      await runtime.initialize(state.database, state.ports);
+      try {
+        await runtime.ensureConversation({
+          ...seed,
+          history: {
+            history: [
+              {
+                turnId: 'past',
+                messages: [
+                  { role: 'user', parts: [{ type: 'text', text: 'Old context '.repeat(400) }] },
+                  { role: 'assistant', parts: [{ type: 'text', text: 'Previous answer' }] },
+                ],
+              },
+            ],
+            contextCheckpoint: null,
+            referencedFileEntryIds: [],
+          },
+        });
+        await submitAndWait(
+          runtime,
+          {
+            ...input('finite-compaction'),
+            input: [{ type: 'text', text: 'Current question '.repeat(100) }],
+          },
+          'failed',
+        );
+        expect(fetch).toHaveBeenCalledTimes(1);
+        expect(JSON.parse(String(fetch.mock.calls[0][1]?.body))).toMatchObject({
+          stream: false,
+          messages: expect.arrayContaining([
+            expect.objectContaining({
+              content: expect.stringContaining('Write a conversation summary'),
+            }),
+          ]),
+        });
+        const failedTurn = {
+          status: 'failed',
+          error: { code, retryable: false },
+        };
+        expect((await runtime.message(lane, 'answer-finite-compaction'))?.turn).toMatchObject(
+          failedTurn,
+        );
+        await runtime.close();
+        runtime = state.create();
+        await runtime.initialize(state.database, state.ports);
+        expect((await runtime.message(lane, 'answer-finite-compaction'))?.turn).toMatchObject(
+          failedTurn,
+        );
+        expect(fetch).toHaveBeenCalledTimes(1);
+      } finally {
+        await runtime.close();
+      }
+    },
+  );
+
+  test('finite durable tool turn executes exactly once and makes a finite follow-up request', async () => {
+    const state = fixture();
+    const waitingForTerminal = deferred<void>();
+    const releaseTerminal = deferred<void>();
+    const completed = deferred<void>();
+    const execute = jest.fn(async () => ({ value: { saved: true }, artifacts: [] }));
+    const tool: RuntimeTool = {
+      ref: { source: 'builtin', capabilityId: 'write_file' },
+      providerName: 'write_file',
+      displayName: 'Write file',
+      description: 'Save a file.',
+      inputSchema: { type: 'object', properties: {} },
+      approval: 'auto',
+      execute,
+    };
+    state.ports.resolveTool = async () => tool;
+    const payloads: Record<string, unknown>[] = [];
+    const model = {
+      ...wire,
+      api: 'openai-completions' as const,
+      baseUrl: 'https://provider.test/v1',
+      compat: { supportsFinishReason: false },
+    };
+    const fetch = jest.fn(async (_url: unknown, options?: RequestInit) => {
+      payloads.push(JSON.parse(String(options?.body)));
+      return new Response(
+        JSON.stringify({
+          choices: [
+            payloads.length === 1
+              ? {
+                  message: {
+                    tool_calls: [
+                      {
+                        id: 'save',
+                        type: 'function',
+                        function: { name: 'write_file', arguments: '{}' },
+                      },
+                    ],
+                  },
+                  finish_reason: 'tool_calls',
+                }
+              : { message: { content: 'Saved.' }, finish_reason: 'stop' },
+          ],
+          ...(payloads.length === 2
+            ? { usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 } }
+            : {}),
+        }),
+        { headers: { 'content-type': 'application/json' } },
+      );
+    });
+    const streamFn = await bindPiStream(
+      {
+        ...resolvePiApiAdapter(ENDPOINT_TYPE.OPENAI_CHAT_COMPLETIONS),
+        loadStreamSimple: async () => streamCompletions as PiStreamFn,
+      },
+      { shouldStream: false, apiKey: 'key', fetch, headers: {}, maxRetries: 0, maxTokens: 256 },
+    );
+    const resolveModel = state.dependencies.resolveModel;
+    state.dependencies.resolveModel = async (...args) => ({
+      ...(await resolveModel(...args)),
+      model,
+      shouldStream: false,
+      streamFn: (model, context, options) =>
+        streamFn(model, context, {
+          ...options,
+          onProviderStreamEvent: async (event, wire) => {
+            await options?.onProviderStreamEvent?.(event, wire);
+            if ((event as { choices?: unknown[] }).choices?.length === 0) {
+              waitingForTerminal.resolve();
+              await releaseTerminal.promise;
+            }
+          },
+        }),
+    });
+    const runtime = state.create();
+    await runtime.initialize(state.database, state.ports);
+    await runtime.ensureConversation({
+      ...seed,
+      configuration: { ...seed.configuration, tools: [tool] },
+    });
+    const snapshots: { status: string; text: string; state?: string }[] = [];
+    const observation = await runtime.observe(lane, (event) => {
+      if (event.type !== 'turn.updated' || event.turn.identity.requestId !== 'finite-tool') return;
+      const text = event.turn.parts.find((part) => part.type === 'text');
+      if (text?.type === 'text' && text.text)
+        snapshots.push({ status: event.turn.status, text: text.text, state: text.state });
+      if (event.turn.status === 'completed') completed.resolve();
+    });
+    try {
+      await runtime.submit(lane, input('finite-tool'));
+      await waitingForTerminal.promise;
+      // Allow Pi's trailing progress commit to publish any leaked intermediate text.
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(snapshots).toEqual([]);
+      releaseTerminal.resolve();
+      await completed.promise;
+      expect(snapshots).toEqual([{ status: 'completed', text: 'Saved.', state: 'done' }]);
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(payloads.map((payload) => payload.stream)).toEqual([false, false]);
+      expect(payloads.every((payload) => !('stream_options' in payload))).toBe(true);
+      expect(payloads[1]?.messages).toContainEqual(
+        expect.objectContaining({
+          role: 'tool',
+          tool_call_id: 'save',
+          content: expect.stringContaining('saved'),
+        }),
+      );
+      expect((await runtime.message(lane, 'answer-finite-tool'))?.turn.parts).toContainEqual(
+        expect.objectContaining({ type: 'text', text: 'Saved.' }),
+      );
+    } finally {
+      releaseTerminal.resolve();
+      await observation.unsubscribe();
+      await runtime.close();
+    }
+  });
+
+  test.each(['storage', 'cancellation', 'unhandled-validation'] as const)(
+    'does not isolate %s failures during configuration restore',
+    async (source) => {
+      const state = fixture();
+      const runtime = state.create();
+      const controller = new AbortController();
+      const failure =
+        source === 'unhandled-validation'
+          ? new ZodError([])
+          : new Error(source === 'storage' ? 'Storage unavailable' : 'Host replaced');
+      jest.spyOn(runtime, 'unfinishedLanes').mockResolvedValue([lane]);
+      const configuration = jest
+        .spyOn(PiDurableRuntime.prototype, 'configuration')
+        .mockImplementation(async () => {
+          if (source === 'cancellation') controller.abort(failure);
+          else throw failure;
+          return undefined;
+        });
+      const onRecoveryFailure = jest.fn(async () => {});
+      if (source !== 'unhandled-validation') state.ports.onRecoveryFailure = onRecoveryFailure;
+      try {
+        await expect(
+          runtime.initialize(state.database, state.ports, controller.signal),
+        ).rejects.toBe(failure);
+        expect(onRecoveryFailure).not.toHaveBeenCalled();
+      } finally {
+        configuration.mockRestore();
+        await runtime.close();
+      }
+    },
+  );
+
+  test.each(['unfinished', 'idle'] as const)(
+    'isolates corrupt %s configuration while restoring and running a healthy owner',
+    async (status) => {
+      const state = fixture();
+      let runtime = state.create();
+      const healthy = runtimeLane('healthy-session');
+      await runtime.initialize(state.database, state.ports);
+      await runtime.ensureConversation(seed);
+      await runtime.ensureConversation({ ...seed, lane: healthy });
+      await runtime.close();
+      const inspection = await PiDurableRuntime.open(state.storage, {
+        models: createModels({
+          authContext: { env: async () => undefined, fileExists: async () => false },
+        }),
+        registry: createRegistry(),
+      });
+      const configuration = defineDocFamily<{ value: JsonObject }, JsonObject>({
+        kind: 'cherry.configuration',
+        version: 1,
+        scope: 'session',
+        checkpointWhen: () => false,
+        family: true,
+        initial: (value) => ({ value }),
+      });
+      const metadata = defineDocFamily<{ value: JsonObject }, JsonObject>({
+        kind: 'cherry.submission',
+        version: 1,
+        scope: 'session',
+        checkpointWhen: () => false,
+        family: true,
+        initial: (value) => ({ value }),
+      });
+      try {
+        for (const target of [lane, healthy]) {
+          const conversation = (await inspection.conversation(target.sessionId))!;
+          const submission = input(target.sessionId);
+          await conversation.commit(async (tx) => {
+            if (target === lane) {
+              (await tx.doc(configuration, target.sessionId, {})).value = {};
+              if (status === 'idle') return;
+            }
+            await tx.doc(
+              metadata,
+              `${conversation.id}:${submission.requestId}`,
+              piSubmissionMetadata(submission, []),
+            );
+            const live = await tx.doc(LiveDoc, conversation.id);
+            const entry = await tx.appendEntry(UserEntry, conversation.id, {
+              model: [{ role: 'user', content: 'Synthetic unfinished input', timestamp: 1 }],
+            });
+            const record = await tx.createSubmission({
+              conversationId: conversation.id,
+              type: 'input',
+              status: 'placed',
+              requestId: submission.requestId,
+              entry: entry.id,
+            });
+            const taskId = await tx.createTask(
+              GenerationTask,
+              {},
+              {
+                ownership: { kind: 'conversation' },
+                conversationId: conversation.id,
+              },
+            );
+            live.run = { taskId, inputs: [record.id], turns: 0 };
+          }, BACKGROUND_CONTEXT);
+        }
+      } finally {
+        await inspection.close();
+      }
+      const failure = jest.fn(async () => {});
+      state.ports.onRecoveryFailure = failure;
+      runtime = state.create();
+      try {
+        await runtime.initialize(state.database, state.ports);
+        if (status === 'unfinished')
+          expect(failure).toHaveBeenCalledWith(lane, expect.any(ZodError));
+        expect(failure).toHaveBeenCalledTimes(status === 'unfinished' ? 1 : 0);
+        expect((await runtime.configuration(healthy)).model).toEqual(reference);
+        const completed = deferred<void>();
+        const observed = await runtime.observe(healthy, (event) => {
+          if (event.type === 'turn.updated' && event.turn.status === 'completed')
+            completed.resolve();
+        });
+        runtime.resume();
+        await completed.promise;
+        await observed.unsubscribe();
+        expect(state.requests).toHaveLength(1);
+        expect((await runtime.history(healthy, { limit: 1 })).turns[0]?.status).toBe('completed');
+        await expect(runtime.configuration(lane)).rejects.toBeInstanceOf(ZodError);
+        await expect(runtime.observe(lane, () => {})).rejects.toBeInstanceOf(ZodError);
+      } finally {
+        await runtime.close();
+      }
+    },
+  );
+
+  test('observing an inherited answer survives retiring its parent working copy and reopening', async () => {
+    const state = fixture();
+    let runtime = state.create();
+    const child = runtimeLane('child-session');
+    await runtime.initialize(state.database, state.ports);
+    try {
+      await runtime.ensureConversation(seed);
+      await submitAndWait(runtime, input('parent'));
+      const parent = (await runtime.message(lane, 'answer-parent'))!.turn;
+      await runtime.forkConversation({
+        ...seed,
+        lane: child,
+        from: { lane, boundary: parent.answerBoundary! },
+        referencedFileEntryIds: [],
+      });
+      await runtime.discardConversation(lane);
+      await runtime.close();
+      runtime = state.create();
+      await runtime.initialize(state.database, state.ports);
+      const observed = await runtime.observe(child, () => {});
+      await observed.unsubscribe();
+      expect((await runtime.message(child, 'answer-parent'))?.turn).toMatchObject({
+        userMessageId: 'user-parent',
+        assistantMessageId: 'answer-parent',
+        status: 'completed',
+      });
+      await runtime.configure(child, seed.configuration);
+      await submitAndWait(runtime, input('child'), 'completed', child);
+      expect(state.requests).toHaveLength(2);
+    } finally {
+      await runtime.close();
+    }
+  });
+
   test('an isolated execution owner reaches no provider while another Session can answer', async () => {
     const state = fixture();
     state.ports.assertExecutionAllowed = jest.fn(async (owner) => {
@@ -1221,6 +1767,7 @@ describe('Persistent Agent facade', () => {
       // Jest loads the same installed adapter through CommonJS; Metro uses its import entry.
       const loadStream = jest.spyOn(adapter, 'loadStreamSimple').mockResolvedValue(streamSimple);
       const capture = await bindPiStream(adapter, {
+        shouldStream: true,
         apiKey: 'test-key',
         fetch: async () => {
           throw new Error('This test must not contact a provider.');
@@ -1894,6 +2441,107 @@ describe('Persistent Agent facade', () => {
     }
   });
 
+  test('a DeepSeek fork sends its own reasoning from history rebuilt by Claude', async () => {
+    const state = fixture();
+    const deepseekRef = { providerId: CLOUD_PROVIDER_ID, modelId: 'deepseek-v4-flash' };
+    const claudeRef = { providerId: CLOUD_PROVIDER_ID, modelId: 'claude-sonnet-4-5' };
+    const lookup: RuntimeTool = {
+      ref: { source: 'builtin', capabilityId: 'lookup' },
+      providerName: 'lookup',
+      displayName: 'Lookup',
+      description: 'Look up an item',
+      approval: 'auto',
+      inputSchema: { type: 'object', properties: {} },
+      execute: async () => ({ value: null, artifacts: [] }),
+    };
+    const deepseek: Model<'openai-completions'> = {
+      ...wire,
+      api: 'openai-completions',
+      provider: deepseekRef.providerId,
+      id: deepseekRef.modelId,
+      baseUrl: 'https://cloud.example/v1',
+      reasoning: true,
+      compat: { requiresReasoningContentOnAssistantMessages: true },
+    };
+    const payloads: {
+      messages: { role: string; content: unknown; reasoning_content?: string }[];
+      tools?: unknown[];
+    }[] = [];
+    const original = state.dependencies.resolveModel;
+    state.dependencies.resolveModel = async (...args) => ({
+      ...(await original(...args)),
+      model: deepseek,
+      streamFn: (_model, context, options) =>
+        streamCompletions(deepseek, context, {
+          ...options,
+          apiKey: 'fixture',
+          maxRetries: 0,
+          fetch: async (_url, init) => {
+            payloads.push(JSON.parse(String(init?.body)));
+            return new Response(
+              'data: {"choices":[{"index":0,"delta":{"reasoning":"Native thought."}}]}\n\n' +
+                'data: {"choices":[{"index":0,"delta":{"content":"OK"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+              { headers: { 'Content-Type': 'text/event-stream' } },
+            );
+          },
+        }),
+    });
+    const runtime = state.create();
+    await runtime.initialize(state.database, state.ports);
+    const fork = runtimeLane('session', 1);
+    try {
+      const boundary = await runtime.ensureConversation({
+        ...seed,
+        configuration: { ...seed.configuration, model: claudeRef },
+        history: {
+          history: [
+            ...cherryHistory(deepseekRef.modelId, 'A original thought.'),
+            ...cherryHistory(claudeRef.modelId, 'B private thought.'),
+          ],
+          contextCheckpoint: null,
+          referencedFileEntryIds: [],
+        },
+      });
+      await runtime.forkConversation({
+        ...seed,
+        lane: fork,
+        from: { lane, boundary: boundary! },
+        configuration: { ...seed.configuration, model: deepseekRef, tools: [lookup] },
+        referencedFileEntryIds: [],
+      });
+      await submitAndWait(runtime, input('forked-deepseek'), 'completed', fork);
+      expect(payloads).toHaveLength(1);
+      expect(payloads[0]!.tools?.length).toBeGreaterThan(0);
+      expect(
+        payloads[0]!.messages
+          .filter((item) => item.role === 'assistant')
+          .map((item) => item.reasoning_content),
+      ).toEqual(['A original thought.', '']);
+      expect(JSON.stringify(payloads[0])).not.toContain('B private thought.');
+      await submitAndWait(runtime, input('follow-up'), 'completed', fork);
+      expect(payloads[1]!.messages).toContainEqual({
+        role: 'assistant',
+        content: 'OK',
+        reasoning_content: 'Native thought.',
+      });
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  test('restored Claude context usage excludes reasoning omitted by its protocol', () => {
+    const runtime = fixture().create();
+    const model = { providerId: CLOUD_PROVIDER_ID, modelId: 'claude-sonnet-4-5' };
+    const estimate = (reasoning: string) =>
+      runtime.estimateStoredContextUsage({
+        model,
+        instructions: 'Help.',
+        contextCheckpoint: null,
+        history: cherryHistory(model.modelId, reasoning),
+      });
+    expect(estimate('x'.repeat(35000))).toBe(estimate(''));
+  });
+
   test('reads a Session slot bindings once until a binding changes', async () => {
     const state = fixture();
     const runtime = state.create();
@@ -2077,6 +2725,87 @@ describe('Native web tools', () => {
     functionToolMixing: true,
     dialect: 'anthropic',
   };
+
+  test.each([
+    ['deepseek-chat', 'openai-completions', streamCompletions],
+    ['deepseek-responses', 'openai-responses', streamResponses],
+    ['deepseek-messages', 'anthropic-messages', streamAnthropic],
+  ] as const)(
+    'keeps DeepSeek web tools and safety checks compatible with Agent functions on %s',
+    async (dialect, api, adapter) => {
+      const response =
+        api === 'anthropic-messages'
+          ? anthropicResponse([{ type: 'text', text: 'Done.' }])
+          : api === 'openai-responses'
+            ? sse([...item(0, answer), completed])
+            : `data: ${JSON.stringify({
+                id: 'chat',
+                object: 'chat.completion.chunk',
+                choices: [
+                  {
+                    index: 0,
+                    delta: { role: 'assistant', content: 'Done.' },
+                    finish_reason: 'stop',
+                  },
+                ],
+              })}\n\ndata: [DONE]\n\n`;
+      for (const declared of [tools, []]) {
+        const state = nativeFixture(
+          [response],
+          { dialect, search: true, fetch: true, functionToolMixing: false },
+          api,
+          adapter as PiStreamFn,
+        );
+        const resolveModel = state.dependencies.resolveModel;
+        state.dependencies.resolveModel = async (...args) => ({
+          ...(await resolveModel(...args)),
+          deepseekSafetyCheck: true,
+        });
+        const runtime = state.create();
+        await runtime.initialize(state.database, state.ports);
+        try {
+          await runtime.ensureConversation({
+            ...seed,
+            configuration: { ...configuration, tools: declared },
+          });
+          await submitAndWait(runtime, input('deepseek'));
+          expect(state.payloads).toHaveLength(1);
+          const payload = state.payloads[0]!;
+          if (declared.length) {
+            const names = payload.tools.map((definition) =>
+              api === 'openai-completions'
+                ? (definition.function as { name: string }).name
+                : definition.name,
+            );
+            expect(names).toEqual(['web_search', 'web_fetch', 'read_file']);
+            expect(payload).not.toHaveProperty('safety_check');
+            expect(
+              payload.tools.every((definition) =>
+                api === 'anthropic-messages'
+                  ? definition.type === undefined && !!definition.input_schema
+                  : definition.type === 'function',
+              ),
+            ).toBe(true);
+          } else {
+            expect(payload.tools).toEqual([
+              {
+                type: 'deepseek_web_search',
+                ...(api === 'anthropic-messages' ? { name: 'deepseek_web_search' } : {}),
+              },
+              {
+                type: 'deepseek_read_url',
+                ...(api === 'anthropic-messages' ? { name: 'deepseek_read_url' } : {}),
+              },
+            ]);
+            expect(payload.safety_check).toEqual({ level: 'high' });
+          }
+          expect((await runtime.message(lane, 'answer-deepseek'))?.turn.status).toBe('completed');
+        } finally {
+          await runtime.close();
+        }
+      }
+    },
+  );
 
   test('disabled retains external functions without native request definitions', async () => {
     const state = nativeFixture(

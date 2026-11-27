@@ -36,6 +36,7 @@ import {
   type MobileRegistryLoader,
   type RemoteRegistryFileName,
 } from '@/backend/data/services/MobileRegistryLoader';
+import { iagentGroupId } from '@/shared/contracts/iagent';
 import { createUniqueModelId, type Model } from '@/shared/data/types/model';
 import type {
   ApiFeatures,
@@ -576,17 +577,22 @@ export class ProviderRegistryService {
     model: Model,
     endpointType?: EndpointType,
   ): ResolvedReasoningProfile {
+    const isIagentProvider = iagentGroupId(provider.id) !== null;
+    const findReasoning = (modelId: string) =>
+      isIagentProvider ? undefined : this.loader.findModel(modelId)?.reasoning;
     const profileProvider = this.findProfileProvider(provider);
     const effectiveEndpoint =
       endpointType ??
       resolveReasoningEndpointType(model.endpointTypes, provider.defaultChatEndpoint ?? undefined);
-    const providerIds = Array.from(
-      new Set(
-        [provider.id, profileProvider?.id, provider.presetProviderId].filter(
-          (value): value is string => Boolean(value),
-        ),
-      ),
-    );
+    const providerIds = isIagentProvider
+      ? []
+      : Array.from(
+          new Set(
+            [provider.id, profileProvider?.id, provider.presetProviderId].filter(
+              (value): value is string => Boolean(value),
+            ),
+          ),
+        );
     const modelIds = Array.from(
       new Set(
         [model.apiModelId, model.presetModelId].filter((value): value is string => Boolean(value)),
@@ -611,9 +617,7 @@ export class ProviderRegistryService {
       if (contract) break;
     }
 
-    const presetReasoning = this.loader.findModel(
-      matchedOverride?.modelId ?? model.presetModelId ?? '',
-    )?.reasoning;
+    const presetReasoning = findReasoning(matchedOverride?.modelId ?? model.presetModelId ?? '');
     const materializedReasoning = model.reasoning
       ? {
           ...model.reasoning,
@@ -624,8 +628,7 @@ export class ProviderRegistryService {
       presetReasoning ?? materializedReasoning,
       contract?.support,
     );
-    const wireDialect =
-      support?.wireDialect ?? this.loader.findModel(model.apiModelId ?? '')?.reasoning?.wireDialect;
+    const wireDialect = support?.wireDialect ?? findReasoning(model.apiModelId ?? '')?.wireDialect;
     const resolved = resolveReasoningProfileFromRegistry({
       contract,
       endpointType: effectiveEndpoint,
@@ -650,6 +653,14 @@ export class ProviderRegistryService {
     modelId: string,
     providerConfig?: Omit<ReasoningProviderContext, 'id'>,
   ): ModelRegistryLookup {
+    const context = { ...providerConfig, id: providerId };
+    if (iagentGroupId(providerId) !== null) {
+      return {
+        presetModel: null,
+        registryOverride: null,
+        reasoningProfile: this.resolveProfileForModelData(context, null, null, modelId),
+      };
+    }
     const sourceProviderId =
       this.loader.findProvider(providerId)?.id ?? providerConfig?.presetProviderId ?? providerId;
     const registryOverride = this.loader.findOverride(sourceProviderId, modelId);
@@ -660,16 +671,13 @@ export class ProviderRegistryService {
     return {
       presetModel,
       reasoningProfile: this.resolveProfileForModelData(
-        { ...providerConfig, id: providerId },
+        context,
         presetModel,
         registryOverride,
         modelId,
       ),
       registryOverride,
-      serviceTierControl: this.resolveServiceTierControlForModelData(
-        { ...providerConfig, id: providerId },
-        registryOverride,
-      ),
+      serviceTierControl: this.resolveServiceTierControlForModelData(context, registryOverride),
     };
   }
 

@@ -35,6 +35,7 @@ import type {
 } from '../types';
 import { PiCodemodeArtifactsEntry } from './piCodemodeFiles';
 import { PiCodemodeMcpResultEntry } from './piCodemodeResults';
+import { readPiCompactionFailure } from './piCompaction';
 import { readPiTerminalError } from './piModelError';
 import { applyPiReplyEdits, PI_REPLY_EDIT_KIND } from './piReplyEditing';
 import { readPiWebResult } from './PiWebResponse';
@@ -118,6 +119,7 @@ const PiSubmissionSchema = z.object({
   userMessageId: z.string().min(1),
   assistantMessageId: z.string().min(1),
   createdAt: z.number().finite().nonnegative(),
+  hasRetainedOutput: z.boolean().optional(),
   metadata: z.record(z.string(), RuntimeJsonValueSchema),
   tools: z.array(PiToolBlueprintSchema),
 });
@@ -293,6 +295,20 @@ function toolInputPreview(
   };
 }
 
+function hasLegacyRetainedParts(retainedParts: unknown): boolean {
+  if (!Array.isArray(retainedParts)) return false;
+  return retainedParts.some((part) => {
+    if (typeof part !== 'object' || part === null || Array.isArray(part)) return false;
+    const record = part as Record<string, unknown>;
+    if (record.type === 'text' || record.type === 'reasoning') {
+      return typeof record.text === 'string' && Boolean(record.text.trim());
+    }
+    return (
+      typeof record.type === 'string' && record.type !== 'data-error' && record.type !== 'error'
+    );
+  });
+}
+
 export function projectPiTurn(options: {
   lane: RuntimeLane;
   record: SubmissionRecord;
@@ -337,6 +353,8 @@ export function projectPiTurn(options: {
         usage[key] = (usage[key] ?? 0) + (billed[key] ?? 0);
     }
     const terminalError = readPiTerminalError(message);
+    // A later provider attempt owns the final outcome, including recovery after an error.
+    error = terminalError ?? null;
     if (terminalError) {
       const imageTool =
         message.api === 'cherry-image'
@@ -619,8 +637,7 @@ export function projectPiTurn(options: {
     error = null;
   } else if (record.status === 'queued') status = 'queued';
   else if (answerVisible) {
-    status = 'completed';
-    error = null;
+    status = error ? 'failed' : 'completed';
   } else if (record.status === 'unanswered') {
     status =
       record.reason === 'aborted'
@@ -628,16 +645,40 @@ export function projectPiTurn(options: {
         : /interrupt|orphan/.test(record.reason)
           ? 'interrupted'
           : 'failed';
-    error ??= {
-      code: record.reason,
-      message:
-        typeof record.detail === 'string'
-          ? record.detail
-          : 'The Agent run ended without an answer.',
-      retryable: status !== 'cancelled',
-      origin: 'runtime',
-    };
+    const compactionFailure =
+      record.reason === 'model_error' ? readPiCompactionFailure(record.detail) : undefined;
+    error = compactionFailure ??
+      error ?? {
+        code: record.reason,
+        message:
+          typeof record.detail === 'string'
+            ? record.detail
+            : 'The Agent run ended without an answer.',
+        retryable: status !== 'cancelled',
+        origin: 'runtime',
+      };
   } else status = hasAssistant ? 'interrupted' : 'completed';
+  // Validate completed turns that own an actual model answer; coalesced placeholders and retained retry prefixes stay valid.
+  const hasRetainedOutput =
+    stored.hasRetainedOutput ?? hasLegacyRetainedParts(stored.metadata.retainedParts);
+  if (
+    status === 'completed' &&
+    answerVisible &&
+    !hasRetainedOutput &&
+    !parts.some((part) =>
+      part.type === 'text' || part.type === 'reasoning'
+        ? Boolean(part.text.trim() || part.hasText)
+        : part.type !== 'error',
+    )
+  ) {
+    status = 'failed';
+    error = {
+      code: 'invalid_response',
+      message: 'The model returned an invalid response with no content.',
+      retryable: true,
+      origin: 'provider',
+    };
+  }
   // Recovery can read a terminal input whose last tool never produced a result entry. Persist a
   // terminal pair, never a tool that appears to keep running in the Cherry transcript forever.
   if (status !== 'running' && status !== 'queued')

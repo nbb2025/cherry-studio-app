@@ -35,16 +35,18 @@ import {
   PaintingInputProvider,
 } from '@/frontend/components/PaintingInput';
 import { useModelChoice } from '@/frontend/components/Policy';
-import { useBackendModule } from '@/frontend/data';
+import { useBackendModule, usePreference } from '@/frontend/data';
 import { useAgentApiById, useAgentSession, useAgentSessionMutations } from '@/frontend/hooks/agent';
 import { usePluginCatalog, usePluginConnections } from '@/frontend/hooks/plugin';
 import { sshErrorLabel } from '@/frontend/hooks/ssh';
 import { AgentProtocolError } from '@/shared/contracts/agent';
+import { isIagentModel } from '@/shared/contracts/iagent';
 import { loggerService } from '@/shared/core/logger/LoggerService';
 import { type AgentMode, DEFAULT_AGENT_MODE } from '@/shared/data/types/agent';
-import type { UniqueModelId } from '@/shared/data/types/model';
+import { isUniqueModelId, type UniqueModelId } from '@/shared/data/types/model';
 import type { SkillAction } from '@/shared/data/types/skill';
 import { SshError } from '@/shared/data/types/ssh';
+import { isIagentEdition } from '@/shared/utils/iagentEdition';
 import { isImageGenerationModel, isTextGenerationModel } from '@/shared/utils/modelPurpose';
 
 import { useChatQuoteActions } from '../../quotes/ChatQuoteContext';
@@ -197,8 +199,11 @@ export function ChatInput({
       ? storedSessionModelId
       : undefined;
   // The first-send handoff keeps this composer mounted before the saved Session loads.
+  const [defaultModel] = usePreference('agent.default_model_id');
   const selectedModelId =
-    (session ? sessionModelId : (sessionModelId ?? draftModelId)) ?? agent?.model ?? null;
+    (session ? sessionModelId : (sessionModelId ?? draftModelId)) ??
+    agent?.model ??
+    (isIagentEdition() && defaultModel && isUniqueModelId(defaultModel) ? defaultModel : null);
   const modelOverrideId = pendingModelId === sessionModelId ? pendingModelId : undefined;
   const selectModel = useCallback(
     (modelId: UniqueModelId) => {
@@ -477,6 +482,7 @@ function TextChatInput({
   const quoteActions = useChatQuoteActions();
   const { t } = useTranslation();
   const router = useRouter();
+  const account = useBackendModule('account');
   const ssh = useBackendModule('ssh');
   const sshContextId = sessionId ?? (sshDraftId ? `draft:${sshDraftId}` : undefined);
   const [sshPickerContext, setSshPickerContext] = useState<string | null>(null);
@@ -516,7 +522,7 @@ function TextChatInput({
     }
     setSshPickerContext(contextId);
   }
-  const isSshAvailable = mode === 'standard' && ssh.isAvailable();
+  const isSshAvailable = !isIagentEdition() && mode === 'standard' && ssh.isAvailable();
   const modelPicker = useChatInputModelPicker({
     agentId,
     agentModelAnswersInParallel,
@@ -552,6 +558,16 @@ function TextChatInput({
   }, [closeModelPicker, openProviderSetup]);
   const handleSendPress = useCallback(
     async ({ attachments, text }: ComposerSendPayload) => {
+      if (
+        isIagentEdition() &&
+        !account.getState().isSignedIn &&
+        (replyModels
+          ? replyModels.some(isIagentModel)
+          : !selectedModelId || isIagentModel(selectedModelId))
+      ) {
+        router.navigate('/login');
+        throw new DOMException('iAgent sign-in requested', 'AbortError');
+      }
       if (editing) {
         if (!text.trim() || text.trim() === editing.initialText.trim() || isBusy)
           throw new AgentProtocolError({
@@ -669,6 +685,7 @@ function TextChatInput({
       }
     },
     [
+      account,
       beginEditSend,
       draftModelId,
       editMessage,
@@ -688,6 +705,7 @@ function TextChatInput({
       reasoningEffort,
       reasoningEfforts,
       replyModels,
+      router,
       selectedModelId,
       sendMessage,
       ssh,
@@ -766,9 +784,17 @@ function TextChatInput({
                       onPickSsh={isSshAvailable ? prepareSshPicker : undefined}
                       sshContextId={sshPickerContext ?? sshContextId}
                       media={mode === 'minimal' ? 'images' : 'all'}
-                      plugins={mode === 'standard' && !isParallel ? connectedPlugins : undefined}
+                      plugins={
+                        !isIagentEdition() && mode === 'standard' && !isParallel
+                          ? connectedPlugins
+                          : undefined
+                      }
                       prompts={prompts}
-                      skillAgentId={mode === 'standard' && !isParallel ? agentId : undefined}
+                      skillAgentId={
+                        !isIagentEdition() && mode === 'standard' && !isParallel
+                          ? agentId
+                          : undefined
+                      }
                     />
                   )
                 }
@@ -818,20 +844,18 @@ function TextChatInput({
           </View>
         </Dialog>
       ) : null}
-      {modelPicker.isOpen ? (
-        <ModelPickerDrawer
-          // Parallel answers refuse image generation, so several models are chosen among text ones.
-          modelType={mode === 'minimal' || modelPicker.multiSelect.enabled ? 'text' : 'all'}
-          multiSelect={modelPicker.multiSelect}
-          open
-          onAddProvider={handleAddProvider}
-          onClose={dismissPicker}
-          onSelect={modelPicker.select}
-          selectedModelId={selectedModelId}
-          loginReturnTo={cloudReturnTo}
-          variant="chat"
-        />
-      ) : null}
+      <ModelPickerDrawer
+        // Parallel answers refuse image generation, so several models are chosen among text ones.
+        modelType={mode === 'minimal' || modelPicker.multiSelect?.enabled ? 'text' : 'all'}
+        multiSelect={modelPicker.multiSelect}
+        open={modelPicker.isOpen}
+        onAddProvider={handleAddProvider}
+        onClose={dismissPicker}
+        onSelect={modelPicker.select}
+        selectedModelId={selectedModelId}
+        loginReturnTo={cloudReturnTo}
+        variant="chat"
+      />
     </>
   );
 }

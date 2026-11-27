@@ -49,7 +49,7 @@ import { estimatePiContextUsage, toPiConversation } from './modelMessages';
 import { PiCodemodeFiles, retainPiCodemodeArtifacts } from './piCodemodeFiles';
 import { PI_CODEMODE_STORE_CHARACTERS, retainPiCodemodeOutput } from './piCodemodeOutput';
 import { createPiCodemodeSandbox } from './piCodemodeSandbox';
-import { summarizePiCompaction } from './piCompaction';
+import { PiCompactionError, summarizePiCompaction } from './piCompaction';
 import { cherryClientIdentity, createPiDurableModels, piDurableModelKey } from './piDurableModels';
 import { PiDurableObserver } from './PiDurableObserver';
 import {
@@ -259,7 +259,15 @@ export class PiDurableAgentRuntime implements DurableAgentRuntime {
         })
         .catch((error) => logger.warn('Could not report runtime closure', { error }));
       // Stored history needs no registry code. Rebuild only unfinished owners before any resume.
-      for (const lane of await this.unfinishedLanes()) await this.restoreLane(lane, signal);
+      for (const lane of await this.unfinishedLanes()) {
+        try {
+          await this.restoreLane(lane, signal);
+        } catch (error) {
+          signal?.throwIfAborted();
+          if (!(error instanceof ZodError) || !ports.onRecoveryFailure) throw error;
+          await ports.onRecoveryFailure(lane, error);
+        }
+      }
       signal?.throwIfAborted();
     } catch (error) {
       this.runtimeFailed = !signal?.aborted;
@@ -553,6 +561,8 @@ export class PiDurableAgentRuntime implements DurableAgentRuntime {
 
   async observe(lane: RuntimeLane, listener: (event: RuntimeConversationEvent) => void) {
     const runtime = this.requireRuntime();
+    // Idle copies also need validation before the Host can admit more input to them.
+    await this.configuration(lane);
     const observer = new PiDurableObserver(runtime, lane, listener);
     const snapshot = await observer.start();
     this.observers.add(observer);
@@ -973,9 +983,9 @@ export class PiDurableAgentRuntime implements DurableAgentRuntime {
                 },
               );
               return summary ? { summary } : { failure };
-            } catch {
+            } catch (error) {
               signal.throwIfAborted();
-              return { failure };
+              return { failure: error instanceof PiCompactionError ? error.message : failure };
             }
           },
         }),

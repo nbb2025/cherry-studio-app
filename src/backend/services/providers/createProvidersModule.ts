@@ -13,6 +13,7 @@ import {
   type ProvidersModule,
 } from '@/shared/contracts';
 import type { ApiKeyEntry, AuthConfig, Provider } from '@/shared/data/types/provider';
+import { isPresetProviderAvailable } from '@/shared/utils/iagentEdition';
 
 import { getProviderCatalogEdition } from './providerCatalogEdition';
 import { getProviderConfigurationIssue } from './providerConfiguration';
@@ -42,7 +43,7 @@ export type ProvidersModuleDependencies = {
   };
   hasAvailableModels(provider: Provider): Promise<boolean>;
   registryUpdates: {
-    ensureReady(): Promise<void>;
+    ensureReady(options?: { force?: boolean }): Promise<void>;
     apply(): Promise<ProviderRegistryUpdateResult>;
     subscribe(listener: (event: ProviderRegistryUpdateEvent) => void): () => void;
   };
@@ -63,6 +64,7 @@ export function createProvidersModule({
       .list()
       .filter(
         (provider) =>
+          isPresetProviderAvailable(provider.id) &&
           !catalog.isExcluded(provider.id) &&
           (!provider.availableInEditions || provider.availableInEditions.includes(edition)),
       );

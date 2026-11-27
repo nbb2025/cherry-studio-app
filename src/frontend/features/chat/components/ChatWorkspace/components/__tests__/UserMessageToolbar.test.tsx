@@ -6,6 +6,11 @@ import { AssistantMessageActionsProvider } from '../../context/AssistantMessageA
 import { copyAssistantMessageText } from '../../utils/copyAssistantMessageText';
 import { UserMessageToolbar } from '../UserMessageToolbar';
 
+jest.mock('@/frontend/appShell/account', () => {
+  const account = { getState: () => ({ isSignedIn: false }) };
+  return { useAccount: () => ({ account }) };
+});
+
 jest.mock('../../translation/MessageTranslationProvider', () => ({
   useMessageTranslationStore: () => null,
 }));
@@ -238,3 +243,12 @@ function createUserMessage(status: MessageListItem['status'], text: string): Mes
     status,
   };
 }
+
+jest.mock('@/frontend/data/hooks', () => ({
+  usePreference: () => [
+    jest.requireActual('@/shared/data/types/assistantMessageToolbar')
+      .DEFAULT_ASSISTANT_MESSAGE_TOOLBAR_CONFIG,
+    jest.fn(),
+  ],
+}));
+jest.mock('../AssistantToolbarManageSheet', () => ({ AssistantToolbarManageSheet: () => null }));
