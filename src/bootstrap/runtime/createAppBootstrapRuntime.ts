@@ -42,6 +42,8 @@ import type { DocumentExportRuntime } from '@/backend/services/documentExport';
 import type { EnterpriseSyncService } from '@/backend/services/enterprise';
 import { resetFilePreviewsForRestore } from '@/backend/services/file/filePreviewStorage';
 import { resetFileTextCacheForRestore } from '@/backend/services/file/fileTextCache';
+import { IagentCreativeRuntime } from '@/backend/services/iagent/IagentCreativeRuntime';
+import type { IagentModelRuntime } from '@/backend/services/iagent/IagentModelRuntime';
 import type { JobRuntime } from '@/backend/services/jobs/JobRuntime';
 import type { KeepAliveCoordinator } from '@/backend/services/keepAlive/KeepAliveCoordinator';
 import type { ProviderAccountRuntime } from '@/backend/services/providers/account';
@@ -58,6 +60,7 @@ import { createBackend } from '@/bootstrap/composition/createBackend';
 import { createBackendServices } from '@/bootstrap/composition/createBackendServices';
 import { resolvePublicCatalogOrigin } from '@/bootstrap/profile/cloudLoginConfig';
 import { installationAccount } from '@/bootstrap/profile/installationAccount';
+import { installationIagentAccount } from '@/bootstrap/profile/installationIagentAccount';
 import { initializeAppRuntime } from '@/bootstrap/runtime/initializeAppRuntime';
 import {
   publishForegroundActivityAttention,
@@ -74,6 +77,7 @@ import { measureStartupStage } from '@/shared/core/logger/startupDiagnostics';
 import { isEnterpriseProfile } from '@/shared/data/activeProfile';
 import type { ApiClient } from '@/shared/data/api/types';
 import type { PreferenceClient } from '@/shared/data/preference';
+import { isIagentEdition } from '@/shared/utils/iagentEdition';
 
 export type AppBootstrapRuntime = {
   readonly backend: Backend;
@@ -178,26 +182,37 @@ export function createAppBootstrapRuntime(
   const region = host.container.get<RegionService>('RegionService');
   const webSearch = host.container.get<WebSearchService>('WebSearchService');
   const trash = host.container.get<TrashRuntime>('TrashRuntime');
-  const account = installationAccount();
+  const iagentAccount = isIagentEdition()
+    ? installationIagentAccount(() => i18n.language || 'en-US')
+    : undefined;
+  const cherryAccount = iagentAccount ? undefined : installationAccount();
+  const account = iagentAccount ?? cherryAccount!;
+  const iagentModels = iagentAccount
+    ? host.container.get<IagentModelRuntime>('IagentModelRuntime')
+    : undefined;
+  if (iagentAccount) iagentModels?.configure(iagentAccount);
   const cloud = host.container.get<CloudRuntime>('CloudRuntime');
-  cloud.configure(
-    {
-      getIdentity: account.getCommunityIdentity,
-      getGuestCatalogOrigin: (signal) =>
-        resolvePublicCatalogOrigin(
-          Constants.expoConfig?.extra?.configServiceOrigin,
-          Platform.OS,
-          signal,
-        ),
-      getTokens: account.getCommunityTokens,
-      refreshServices: account.refreshCommunityServices,
-      subscribe: account.subscribe,
-    },
-    Constants.expoConfig?.version ?? '0.0.0',
-  );
+  if (cherryAccount)
+    cloud.configure(
+      {
+        getIdentity: cherryAccount.getCommunityIdentity,
+        getGuestCatalogOrigin: (signal) =>
+          resolvePublicCatalogOrigin(
+            Constants.expoConfig?.extra?.configServiceOrigin,
+            Platform.OS,
+            signal,
+          ),
+        getTokens: cherryAccount.getCommunityTokens,
+        refreshServices: cherryAccount.refreshCommunityServices,
+        subscribe: cherryAccount.subscribe,
+      },
+      Constants.expoConfig?.version ?? '0.0.0',
+    );
   const enterpriseSync = host.container.get<EnterpriseSyncService>('EnterpriseSyncService');
-  enterpriseSync.configure(account.createEnterpriseSession);
-  configureEnterpriseSessionAdmission(account.admit);
+  if (cherryAccount) {
+    enterpriseSync.configure(cherryAccount.createEnterpriseSession);
+    configureEnterpriseSessionAdmission(cherryAccount.admit);
+  }
   // A refused session stops spending the organization's credentials at once. Interrupted turns
   // reopen with the Agent Host and fail admission until the user signs in again.
   let isSessionRefused = account.getState().needsSignIn;
@@ -260,6 +275,20 @@ export function createAppBootstrapRuntime(
     region,
     trash,
     account,
+    iagent:
+      iagentAccount && iagentModels
+        ? {
+            creative: new IagentCreativeRuntime(iagentAccount, iagentModels),
+            getPublicSettings: iagentAccount.getPublicSettings,
+            sendVerificationCode: iagentAccount.sendVerificationCode,
+            authenticate: iagentAccount.authenticate,
+            confirmTwoFactor: iagentAccount.confirmTwoFactor,
+            getUser: iagentAccount.getUser,
+            listModels: iagentModels.listModels,
+            getModelPrices: iagentModels.getModelPrices,
+            getUsage: iagentModels.getUsage,
+          }
+        : undefined,
     cloud,
   });
   backup.configure(
@@ -408,7 +437,12 @@ export function createAppBootstrapRuntime(
       if (host.state !== 'ready') return;
       // Starts the best-effort PostReady phase off the first-paint path.
       host.runPostReady();
-      void account.verify();
+      if (!cherryAccount) {
+        if (iagentAccount?.getState().isSignedIn)
+          void iagentAccount.getUser().catch(() => undefined);
+        return;
+      }
+      void cherryAccount.verify();
       const results = await Promise.allSettled([region.getRegion(), providerCatalog.ensureReady()]);
       if (host.state === 'ready') {
         for (const result of results) {

@@ -9,6 +9,7 @@ export type SidebarActions = {
   returnToChat: () => void;
   openScheduledTasks: () => void;
   openSettings: () => void;
+  openCreative?: () => void;
   openSearch?: () => void;
 };
 

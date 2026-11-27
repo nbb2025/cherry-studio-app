@@ -29,10 +29,12 @@ import {
   DeepseekDocumentUnavailableError,
   uploadDeepseekDocument,
 } from '@/backend/services/file/deepseekFiles';
+import { isIagentEndpoint } from '@/backend/services/iagent/iagentCatalog';
 import { createDeepseekConnection } from '@/backend/services/providers/deepseekConnection';
 import { getProviderConfigurationIssue } from '@/backend/services/providers/providerConfiguration';
 import type { VertexAuthClient } from '@/backend/services/providers/vertex';
 import { CLOUD_PROVIDER_ID } from '@/shared/contracts/cloud';
+import { IagentError, iagentGroupId } from '@/shared/contracts/iagent';
 import { ProviderAccountError } from '@/shared/contracts/providerAccounts';
 import { createUniqueModelId, type Model } from '@/shared/data/types/model';
 import { resolveEndpointDialect } from '@/shared/data/types/provider';
@@ -338,15 +340,25 @@ export function createPiModelResolver(
         piModel.contextWindow,
         runtimeOptions.maxOutputTokens,
       );
+      const iagentEndpoint =
+        iagentGroupId(provider.id) === null ? undefined : connection.endpointType;
+      const iagentFetch = isIagentEndpoint(iagentEndpoint)
+        ? application
+            .get('IagentModelRuntime')
+            .createModelFetch(provider.id, iagentEndpoint, modelId)
+        : undefined;
+      if (iagentGroupId(provider.id) !== null && !iagentFetch) throw new IagentError('request');
       const streamBinding: Parameters<typeof bindPiStream>[1] = {
         shouldStream,
-        apiKey: vertex
-          ? undefined
-          : oauth
-            ? oauth.auth.apiKey
-            : selectedApiKey.value.trim()
-              ? selectedApiKey.value
-              : '',
+        apiKey: iagentFetch
+          ? 'iagent-managed'
+          : vertex
+            ? undefined
+            : oauth
+              ? oauth.auth.apiKey
+              : selectedApiKey.value.trim()
+                ? selectedApiKey.value
+                : '',
         accessToken: vertex?.accessToken,
         ...(vertex && adapter.api === 'anthropic-messages'
           ? { vertex: { projectId: vertex.projectId, location: vertex.location } }
@@ -354,11 +366,12 @@ export function createPiModelResolver(
         cacheRetention: provider.settings.cacheControl?.enabled === false ? 'none' : 'short',
         sessionId,
         isCloudGateway: provider.id === CLOUD_PROVIDER_ID,
-        fetch: (provider.id === CLOUD_PROVIDER_ID
-          ? application.get('CloudRuntime').createModelFetch(modelId, cloudUse)
-          : isDevMock
-            ? createDevMockFetch()
-            : expoFetch) as unknown as FetchFunction,
+        fetch: (iagentFetch ??
+          (provider.id === CLOUD_PROVIDER_ID
+            ? application.get('CloudRuntime').createModelFetch(modelId, cloudUse)
+            : isDevMock
+              ? createDevMockFetch()
+              : expoFetch)) as unknown as FetchFunction,
         headers,
         maxRetries: 0,
         maxTokens: oauth ? Math.min(outputReservation, piModel.maxTokens) : outputReservation,
@@ -661,7 +674,11 @@ async function resolveConfiguredPiModel(runtimeModel: RuntimeModel) {
     modelService.getById(uniqueModelId),
   ]);
   const isDevMock = provider.id === DEV_MOCK_PROVIDER_ID;
-  if (!model || (isDevMock && !isDevMockProviderEnabled())) {
+  if (
+    !model ||
+    (isDevMock && !isDevMockProviderEnabled()) ||
+    (iagentGroupId(provider.id) !== null && (!model.isEnabled || !provider.isEnabled))
+  ) {
     throw new Error(`Model is not configured: ${uniqueModelId}`);
   }
 

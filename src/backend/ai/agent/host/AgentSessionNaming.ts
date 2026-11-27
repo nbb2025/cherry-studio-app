@@ -11,6 +11,7 @@ import type { AgentInputPart, AgentMessagePart, AgentSessionView } from '@/share
 import { loggerService } from '@/shared/core/logger/LoggerService';
 import type { LanguageVarious } from '@/shared/data/preference';
 import { isUniqueModelId, parseUniqueModelId, type UniqueModelId } from '@/shared/data/types/model';
+import { isIagentEdition } from '@/shared/utils/iagentEdition';
 
 import type { RuntimeTextGenerator, RuntimeUsageReport } from '../runtime';
 import type { AgentSessionStore } from '../sessionStore/AgentSessionStore';
@@ -131,7 +132,7 @@ export class AgentSessionNaming {
       if (!session || session.isNameManuallyEdited || !canAutoRename(session.name, userText))
         return null;
 
-      const uniqueModelId = await this.resolveNamingModelId();
+      const uniqueModelId = await this.resolveNamingModelId(session.model);
       if (!uniqueModelId) return null;
       this.dependencies.signal?.throwIfAborted();
       const system = await this.resolveNamingPrompt();
@@ -171,14 +172,18 @@ export class AgentSessionNaming {
     }
   }
 
-  private async resolveNamingModelId(): Promise<UniqueModelId | null> {
+  private async resolveNamingModelId(
+    sessionModel: AgentSessionView['model'],
+  ): Promise<UniqueModelId | null> {
     const [configured, defaultModelId] = await Promise.all([
       this.dependencies.preference.get('agent.session_naming.model_id'),
       this.dependencies.preference.get('agent.default_model_id'),
     ]);
     const candidates = [
       { key: 'agent.session_naming.model_id', value: configured },
-      { key: 'agent.default_model_id', value: defaultModelId },
+      isIagentEdition() && sessionModel
+        ? { key: 'session.model', value: sessionModel }
+        : { key: 'agent.default_model_id', value: defaultModelId },
     ];
     const visited = new Set<string>();
 

@@ -5,7 +5,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ProfileAvatarImage } from '@/frontend/components/Avatar';
 import { useThemeColor } from '@/frontend/hooks/useThemeColor';
 
-import { getNavTitleKey, WIDE_RAIL_DESTINATIONS } from './dockTabs';
+import { getNavTitleKey, isNavigationModuleAvailable, WIDE_RAIL_DESTINATIONS } from './dockTabs';
 import { NavIcon } from './NavIcon';
 import { WIDE_RAIL_WIDTH } from './shellMode';
 import { useNavigationShell } from './state';
@@ -35,7 +35,7 @@ export function WideNavRail() {
       testID="wide-nav-rail"
     >
       <View className="items-center gap-1.5">
-        {WIDE_RAIL_DESTINATIONS.map((dest) => {
+        {WIDE_RAIL_DESTINATIONS.filter(isNavigationModuleAvailable).map((dest) => {
           const isActive = activeDestination === dest;
           return (
             <Pressable

@@ -23,6 +23,7 @@ import { createHttpClient, isHttpError } from '@/backend/services/http';
 import { repositorySourceOrder } from '@/backend/services/region';
 import { raceAbort } from '@/backend/utils/raceAbort';
 import type { ProviderRegistryUpdateResult } from '@/shared/contracts';
+import { isIagentEdition } from '@/shared/utils/iagentEdition';
 
 import {
   type ProviderRegistrySnapshot,
@@ -96,6 +97,7 @@ export class ProviderRegistryUpdaterService extends BaseService {
   private cacheInFlight: Promise<void> | undefined;
 
   protected override async onReady(signal?: AbortSignal): Promise<void> {
+    if (isIagentEdition()) return;
     this.stopped = false;
     const cancel = () => this.stopRequests();
     signal?.addEventListener('abort', cancel, { once: true });

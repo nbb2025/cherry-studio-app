@@ -1,8 +1,15 @@
 import { Avatar } from '@cherrystudio/ui/components';
 
-import { AgentEmojiAvatarSchema, DEEPSEEK_AGENT_AVATAR } from '@/shared/data/types/agent';
+import {
+  AgentEmojiAvatarSchema,
+  DEEPSEEK_AGENT_AVATAR,
+  IAGENT_ASSISTANT_AVATAR,
+} from '@/shared/data/types/agent';
 
-const DEEPSEEK_AVATAR_IMAGE = require('@/assets/avatars/deepseek.webp');
+const BUILT_IN_AVATARS: Readonly<Record<string, number>> = {
+  [DEEPSEEK_AGENT_AVATAR]: require('@/assets/avatars/deepseek.webp'),
+  [IAGENT_ASSISTANT_AVATAR]: require('@/assets/iagent-icon.png'),
+};
 const AGENT_AVATAR_SIZE = 40;
 const EMOJI_FONT_SCALE = 0.58;
 const INITIAL_FONT_SCALE = 0.42;
@@ -34,7 +41,8 @@ export function AgentAvatar({
   testID,
   uri,
 }: AgentAvatarProps) {
-  const builtInImage = avatar === DEEPSEEK_AGENT_AVATAR ? DEEPSEEK_AVATAR_IMAGE : undefined;
+  const builtInImage =
+    avatar && Object.hasOwn(BUILT_IN_AVATARS, avatar) ? BUILT_IN_AVATARS[avatar] : undefined;
   const source = uri ? { uri } : builtInImage;
   const avatarEmoji =
     emoji?.trim() ||

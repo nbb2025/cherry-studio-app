@@ -19,6 +19,7 @@ import { useOptionalNavigationShellActions } from '@/frontend/appShell/navigatio
 import type { AppSearchPanelProps } from '@/frontend/appShell/search';
 import { useThemeColor } from '@/frontend/hooks/useThemeColor';
 import { appSidebar } from '@/frontend/utils/constants';
+import { isIagentEdition } from '@/shared/utils/iagentEdition';
 
 import { type SidebarActions, SidebarActionsContext } from '../context';
 import type { SessionSearchResult } from '../hooks/sessionSearch';
@@ -206,6 +207,14 @@ function SidebarContent({
     router.push('/settings');
   }, [cancelPending, drawer, isOnSettings, isOverlay, page, pageIdentity, router]);
 
+  const openCreative = useCallback(() => {
+    cancelPending();
+    drawer?.closeDrawer();
+    if (page === '/creative') return;
+    if (isOnSettings) router.dismissTo('/creative');
+    else router.navigate('/creative');
+  }, [cancelPending, drawer, isOnSettings, page, router]);
+
   const openSearchResult = useCallback(
     (result: SessionSearchResult) => {
       Keyboard.dismiss();
@@ -243,11 +252,13 @@ function SidebarContent({
           : undefined,
       openScheduledTasks,
       openSettings,
+      openCreative: isIagentEdition() ? openCreative : undefined,
     }),
     [
       cancelPending,
       canDock,
       drawer,
+      openCreative,
       openScheduledTasks,
       openSessionSearch,
       openSettings,

@@ -18,6 +18,7 @@ import type {
 } from '@/backend/data/db/schemas/userProvider';
 import { userProviderTable } from '@/backend/data/db/schemas/userProvider';
 import { CLOUD_PROVIDER_ID } from '@/shared/contracts/cloud';
+import { iagentGroupId } from '@/shared/contracts/iagent';
 import { DataApiErrorFactory } from '@/shared/data/api/errors';
 import type { OrderRequest } from '@/shared/data/api/schemas/endpointHelpers';
 import type { ProviderListPageQuery } from '@/shared/data/api/schemas/providers';
@@ -267,6 +268,7 @@ function rowToProvider(row: UserProviderRow): Provider {
     authMethods: metadata.authMethods,
     authOptional:
       row.providerId === CLOUD_PROVIDER_ID ||
+      iagentGroupId(row.providerId) !== null ||
       resolveAuthOptional(row.authConfig, metadata.authOptional),
     authType,
     defaultChatEndpoint: row.defaultChatEndpoint ?? undefined,

@@ -97,6 +97,7 @@ import type { AccountModule } from '@/shared/contracts/account';
 import type { BackgroundExecutionModule } from '@/shared/contracts/backgroundExecution';
 import type { CloudModule } from '@/shared/contracts/cloud';
 import type { DiagnosticsModule } from '@/shared/contracts/diagnostics';
+import type { IagentModule } from '@/shared/contracts/iagent';
 import { loggerService } from '@/shared/core/logger/LoggerService';
 import { profileScopedName } from '@/shared/data/activeProfile';
 import { FileEntryIdSchema } from '@/shared/data/types/file';
@@ -148,6 +149,7 @@ export function createBackend(
     region: { getRegion(): Promise<NetworkRegion | null> };
     trash: Pick<TrashRuntime, 'trashFile'>;
     account: AccountModule;
+    iagent?: IagentModule;
     cloud: CloudModule;
   },
 ): BackendComposition {
@@ -472,6 +474,7 @@ export function createBackend(
     },
     backend: {
       account: infrastructure.account,
+      ...(infrastructure.iagent ? { iagent: infrastructure.iagent } : {}),
       cloud: infrastructure.cloud,
       appUpdate,
       backgroundExecution: infrastructure.backgroundExecution,

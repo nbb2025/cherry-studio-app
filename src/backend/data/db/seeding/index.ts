@@ -2,6 +2,7 @@ import type { ProviderEdition } from '@cherrystudio/provider-registry';
 
 import { editionCapabilities } from '@/shared/data/managedPolicy';
 import { isDevMockProviderEnabled } from '@/shared/utils/devMockProvider';
+import { isIagentEdition } from '@/shared/utils/iagentEdition';
 
 import type { DbService } from '../DbService';
 import { cloudProviderSeed } from './seeders/cloudProviderSeed';
@@ -13,9 +14,9 @@ import { SeedRunner } from './SeedRunner';
 export async function seedDatabase(dbService: DbService) {
   await new SeedRunner(dbService).runAll([
     new PreferenceSeeder(),
-    ...(editionCapabilities().providerSettings ? [cloudProviderSeed] : []),
+    ...(editionCapabilities().providerSettings && !isIagentEdition() ? [cloudProviderSeed] : []),
   ]);
-  if (typeof __DEV__ !== 'undefined' && __DEV__) {
+  if (typeof __DEV__ !== 'undefined' && __DEV__ && !isIagentEdition()) {
     await syncDevMockProvider(dbService, isDevMockProviderEnabled());
   }
 }

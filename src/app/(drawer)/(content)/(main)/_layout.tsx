@@ -16,6 +16,7 @@ import { OverlaySidebarPresenceProvider } from '@/frontend/appShell/sidebar';
 import { ChatProvider } from '@/frontend/features/chat/runtime';
 import { useThemeColor } from '@/frontend/hooks/useThemeColor';
 import { isLiquidGlassAvailable } from '@/frontend/utils/constants';
+import { isIagentEdition } from '@/shared/utils/iagentEdition';
 
 // Every other destination sits above the chat, so leaving one always lands in a conversation.
 export const unstable_settings = { initialRouteName: '(chat)' };
@@ -31,6 +32,7 @@ export default function MainStackLayout() {
   const { pinnedTabs, shellMode } = useNavigationShell();
   useRegisterMainNavigator(navigation);
 
+  const isIagent = isIagentEdition();
   const isWideRail = shellMode === 'wide-rail';
   const railOrPinnedDestination = {
     animation: 'none' as const,
@@ -75,27 +77,32 @@ export default function MainStackLayout() {
                 name={NAV_ROUTE_MANIFEST.drawings.stackRoute}
                 options={moduleDestination('drawings')}
               />
-              <Stack.Screen
-                name={NAV_ROUTE_MANIFEST.plugins.stackRoute}
-                options={moduleDestination('plugins')}
-              />
-              <Stack.Screen
-                name={NAV_ROUTE_MANIFEST.marketplace.stackRoute}
-                options={moduleDestination('marketplace')}
-              />
+              <Stack.Protected guard={!isIagent}>
+                <Stack.Screen
+                  name={NAV_ROUTE_MANIFEST.plugins.stackRoute}
+                  options={moduleDestination('plugins')}
+                />
+                <Stack.Screen
+                  name={NAV_ROUTE_MANIFEST.marketplace.stackRoute}
+                  options={moduleDestination('marketplace')}
+                />
+                <Stack.Screen
+                  name={NAV_ROUTE_MANIFEST.devices.stackRoute}
+                  options={moduleDestination('devices')}
+                />
+                <Stack.Screen name="scheduled-tasks" options={railOrPinnedDestination} />
+              </Stack.Protected>
+              <Stack.Protected guard={isIagent}>
+                <Stack.Screen name="creative" />
+              </Stack.Protected>
               <Stack.Screen
                 name={NAV_ROUTE_MANIFEST.files.stackRoute}
                 options={moduleDestination('files')}
               />
               <Stack.Screen
-                name={NAV_ROUTE_MANIFEST.devices.stackRoute}
-                options={moduleDestination('devices')}
-              />
-              <Stack.Screen
                 name={NAV_ROUTE_MANIFEST.more.stackRoute}
                 options={railOrPinnedDestination}
               />
-              <Stack.Screen name="scheduled-tasks" options={railOrPinnedDestination} />
               <Stack.Screen name="trash" />
               <Stack.Screen
                 // Task notifications reuse their task; each new draft owns its own page.

@@ -8,6 +8,7 @@ import type { QuoteFields } from '@/shared/contracts/agent';
 import type { AgentSessionEntity } from '@/shared/data/api/schemas/agentSessions';
 import { agentPolicy } from '@/shared/data/managedPolicy';
 import type { UniqueModelId } from '@/shared/data/types/model';
+import { configureIagentEdition } from '@/shared/utils/iagentEdition';
 
 import { createQuoteMention, readQuoteMentions } from '../../../quotes/quoteMentions';
 import { ChatInput } from '../ChatInput';
@@ -58,6 +59,8 @@ const mockFinish = jest.fn();
 const mockCapture = jest.fn(() => ({ fields: mockFields, finish: mockFinish }));
 const mockQuoteActions = { capture: mockCapture };
 const mockSend = jest.fn();
+const mockNavigate = jest.fn();
+let mockSignedIn = false;
 const mockNoop = jest.fn();
 const mockControls = {
   cancel: mockNoop,
@@ -89,10 +92,12 @@ jest.mock('../../../quotes/ChatQuoteContext', () => ({
 jest.mock('../../../runtime', () => ({ useAgentChatImageResult: () => undefined }));
 jest.mock('@/frontend/data', () => ({
   useApiClient: () => ({}),
-  useBackendModule: () => mockSsh,
+  useBackendModule: (key: string) =>
+    key === 'account' ? { getState: () => ({ isSignedIn: mockSignedIn }) } : mockSsh,
+  usePreference: () => [null],
 }));
 jest.mock('expo-router', () => ({
-  useRouter: () => ({ setParams: mockNoop }),
+  useRouter: () => ({ navigate: mockNavigate, setParams: mockNoop }),
   useLocalSearchParams: () => ({}),
   useIsFocused: () => true,
 }));
@@ -192,6 +197,7 @@ const fields: QuoteFields = {
 let renderer: ReactTestRenderer;
 beforeEach(() => {
   jest.clearAllMocks();
+  mockSignedIn = false;
   mockImageMode = false;
   mockAgentModel = undefined;
   mockSession = { model: 'p::m', updatedAt: '2026-11-18T00:00:00.000Z' };
@@ -209,12 +215,45 @@ beforeEach(() => {
   mockFields = fields;
   mockSend.mockResolvedValue(undefined);
 });
-afterEach(() => act(() => renderer.unmount()));
+afterEach(() => {
+  act(() => renderer.unmount());
+  configureIagentEdition(false);
+});
 const mount = async () => {
   await act(async () => {
     renderer = create(<ChatInput agentId="a" sessionId="s" controls={mockControls as never} />);
   });
 };
+
+test('an iAgent draft requests sign-in before sending and can be sent after sign-in', async () => {
+  configureIagentEdition(true);
+  mockSession.model = 'iagent-group-4::gpt-test';
+  const draft = { text: 'Keep this draft', attachments: [] };
+  await mount();
+  const composer = renderer.root.findByType('TextComposer' as never);
+
+  await expect(composer.props.onSend(draft)).rejects.toMatchObject({ name: 'AbortError' });
+  expect(mockNavigate).toHaveBeenCalledWith('/login');
+  expect(mockSend).not.toHaveBeenCalled();
+  expect(mockCapture).not.toHaveBeenCalled();
+
+  mockSignedIn = true;
+  await act(async () => composer.props.onSend(draft));
+  expect(mockSend).toHaveBeenCalledTimes(1);
+  expect(mockSend.mock.calls[0][0].parts[0]).toMatchObject({ text: draft.text });
+});
+
+test('a guest can send with a configured custom model in the iAgent edition', async () => {
+  configureIagentEdition(true);
+  await mount();
+  await act(async () => {
+    await renderer.root
+      .findByType('TextComposer' as never)
+      .props.onSend({ text: 'Send through my provider', attachments: [] });
+  });
+  expect(mockNavigate).not.toHaveBeenCalled();
+  expect(mockSend).toHaveBeenCalledTimes(1);
+});
 
 test('text send captures one attempt, sends the primary quote, and clears only after admission', async () => {
   let admit!: () => void;

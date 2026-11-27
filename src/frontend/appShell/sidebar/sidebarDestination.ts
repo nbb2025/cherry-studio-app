@@ -17,6 +17,7 @@ const manifestRoots: readonly [string, SidebarDestination][] = NAV_DESTINATION_I
 
 const destinationRoots: readonly [string, SidebarDestination][] = [
   ...manifestRoots,
+  ['/creative', 'paintings'],
   ['/scheduled-tasks', 'scheduled-tasks'],
 ];
 

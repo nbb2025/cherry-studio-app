@@ -38,6 +38,7 @@ import { citationIds, collectCitationSources } from '@/frontend/utils/messageCit
 import { DOCUMENT_EXPORT_MAX_SECTIONS } from '@/shared/contracts/documentExport';
 import { DataApiError, ErrorCode } from '@/shared/data/api/errors';
 import { agentPolicy } from '@/shared/data/managedPolicy';
+import { isIagentEdition } from '@/shared/utils/iagentEdition';
 
 import { ChatHeader } from './components/ChatHeader';
 import { ChatInput } from './components/ChatInput';
@@ -417,7 +418,11 @@ function ResolvedChatContent({ target }: { target: ChatTarget }) {
                                   )
                             }
                             placeholder={
-                              continuesShownAnswer ? t('chat.inputPlaceholderContinue') : undefined
+                              continuesShownAnswer
+                                ? t('chat.inputPlaceholderContinue')
+                                : isIagentEdition()
+                                  ? t('iagent.chatPlaceholder')
+                                  : undefined
                             }
                             sessionId={sessionId}
                             sshDraftId={target.kind === 'draft' ? target.sshDraftId : undefined}

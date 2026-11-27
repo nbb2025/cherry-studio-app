@@ -13,6 +13,7 @@ import { useChatSource } from '@/frontend/appShell/navigation/chat';
 import { useUuRemoteAction } from '@/frontend/appShell/uuRemote';
 import { useDesktopConnections } from '@/frontend/hooks/useDesktopConnections';
 import { appSidebar } from '@/frontend/utils/constants';
+import { isIagentEdition } from '@/shared/utils/iagentEdition';
 
 import { useSidebarActions } from '../context';
 import { useSidebarDesktopPrewarm } from '../hooks/useSidebarDesktopPrewarm';
@@ -138,6 +139,7 @@ function SidebarDeviceTitle() {
       {content}
     </View>
   );
+  if (isIagentEdition()) return frame(<SidebarTitle name="iAgent" width={width} />);
   if (!connections.length) return frame(<SidebarTitle name={name} width={width} />);
   const items: MenuItem[] = [
     {

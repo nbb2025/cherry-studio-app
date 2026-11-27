@@ -19,7 +19,7 @@ import { useTranslation } from 'react-i18next';
 import { Platform } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { KeyboardProvider } from 'react-native-keyboard-controller';
-import { withUniwind } from 'uniwind';
+import { useUniwind, withUniwind } from 'uniwind';
 
 import { AppBootstrapGate, AppBootstrapProvider, useAppBootstrapState } from '@/bootstrap';
 import { reportStartupCoverPresented } from '@/bootstrap/runtime/startupCoverHandoff';
@@ -47,6 +47,7 @@ import { useThemeColor } from '@/frontend/hooks/useThemeColor';
 import { LanguagePreferenceObserver } from '@/frontend/i18n';
 import { isLiquidGlassAvailable } from '@/frontend/utils/constants';
 import { getSingleRouteParam } from '@/frontend/utils/routeParams';
+import { isIagentEdition } from '@/shared/utils/iagentEdition';
 
 // Hold the native surface until the matching React Native startup cover has
 // committed its first layout.
@@ -80,11 +81,11 @@ function RootLayout() {
                                   <BottomSheetProvider>
                                     <RouteHeaderProvider rootAction="back">
                                       <AppUpdateProvider>
-                                        <AppUpdateObserver />
+                                        {!isIagentEdition() ? <AppUpdateObserver /> : null}
                                         <BackgroundActivityBridge />
-                                        <CloudAmdReturnBridge />
+                                        {!isIagentEdition() ? <CloudAmdReturnBridge /> : null}
                                         <LanguagePreferenceObserver />
-                                        <UuRemoteCallbackBridge />
+                                        {!isIagentEdition() ? <UuRemoteCallbackBridge /> : null}
                                         {/* Before the navigator, so opaque screens cover the renderer page. */}
                                         <MermaidRendererHost />
                                         <FeedbackCaptureProvider>
@@ -98,7 +99,7 @@ function RootLayout() {
                                             </AccountSessionGate>
                                           </FeedbackHintProvider>
                                         </FeedbackCaptureProvider>
-                                        <PrivacyConsentGate />
+                                        {!isIagentEdition() ? <PrivacyConsentGate /> : null}
                                         <RestoreOutcomeNotice />
                                         <BackupDialog />
                                         <McpInteractionDialog />
@@ -154,6 +155,8 @@ function BootstrapStartupCoordinator({ children }: PropsWithChildren) {
 
 function RootStack() {
   const [backgroundColor, foregroundColor] = useThemeColor(['background', 'foreground']);
+  const isIagent = isIagentEdition();
+  const { theme } = useUniwind();
 
   return (
     <Stack
@@ -162,23 +165,10 @@ function RootStack() {
         headerStyle: getRootHeaderStyle(backgroundColor),
         headerTransparent: isLiquidGlassAvailable,
         headerTintColor: foregroundColor,
+        statusBarStyle: isIagent ? (theme === 'dark' ? 'light' : 'dark') : undefined,
       }}
     >
       <Stack.Screen name="(drawer)" options={{ headerShown: false }} />
-      <Stack.Screen name="onboarding" options={{ headerShown: false }} />
-      <Stack.Screen
-        name="login"
-        getId={() => 'login'}
-        options={({ route }) => ({
-          headerShown: false,
-          animation:
-            (route.params as { purpose?: string } | undefined)?.purpose === 'expired'
-              ? 'none'
-              : undefined,
-        })}
-      />
-      <Stack.Screen name="auth/callback" options={{ headerShown: false }} />
-      <Stack.Screen name="home" options={{ headerShown: false }} />
       <Stack.Screen
         name="search"
         options={{
@@ -200,7 +190,6 @@ function RootStack() {
       <Stack.Screen name="share-destination" options={{ headerTransparent: false }} />
       <Stack.Screen name="mermaid-diagram" options={{ headerTransparent: false }} />
       <Stack.Screen name="edit-reply" options={{ headerTransparent: false }} />
-      <Stack.Screen name="uu-remote/callback" options={{ headerShown: false, animation: 'none' }} />
       <Stack.Screen
         name="share"
         options={{
@@ -211,6 +200,28 @@ function RootStack() {
           gestureEnabled: false,
         }}
       />
+      <Stack.Screen
+        name="login"
+        getId={() => 'login'}
+        options={({ route }) => ({
+          headerShown: false,
+          presentation: isIagent ? 'modal' : 'card',
+          animation:
+            (route.params as { purpose?: string } | undefined)?.purpose === 'expired'
+              ? 'none'
+              : undefined,
+        })}
+      />
+      <Stack.Protected guard={!isIagent}>
+        <Stack.Screen name="onboarding" options={{ headerShown: false }} />
+        <Stack.Screen name="auth/callback" options={{ headerShown: false }} />
+        <Stack.Screen name="oauth/callback" options={{ headerShown: false }} />
+        <Stack.Screen name="home" options={{ headerShown: false }} />
+        <Stack.Screen
+          name="uu-remote/callback"
+          options={{ headerShown: false, animation: 'none' }}
+        />
+      </Stack.Protected>
     </Stack>
   );
 }

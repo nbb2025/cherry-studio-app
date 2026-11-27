@@ -178,16 +178,38 @@ export class AgentService {
    * Seeds the profile's own Agent without recreating one the user deleted. Organization-managed
    * Agents are not the user's, so they never replace it.
    */
-  async createInitialAgent(dto: CreateAgentDto): Promise<Agent | null> {
+  async createInitialAgent(
+    dto: CreateAgentDto,
+    legacyDefaultNames: readonly string[] = [],
+  ): Promise<Agent | null> {
     this.validateName(dto.name);
 
     const row = await this.dbService.withWriteTx(async (tx) => {
       const [existing] = await tx
-        .select({ id: agentTable.id })
+        .select()
         .from(agentTable)
         .where(isNull(agentTable.managedRemoteId))
+        .orderBy(asc(agentTable.createdAt))
         .limit(1);
-      return existing ? null : this.createTx(tx, { ...dto, avatar: CHERRY_AGENT_AVATAR });
+      if (!existing)
+        return this.createTx(tx, { ...dto, avatar: dto.avatar ?? CHERRY_AGENT_AVATAR });
+      if (
+        existing.deletedAt ||
+        existing.avatar !== CHERRY_AGENT_AVATAR ||
+        existing.instructions ||
+        !(legacyDefaultNames.includes(existing.name) || (dto.avatar && existing.name === dto.name))
+      )
+        return null;
+      const [renamed] = await tx
+        .update(agentTable)
+        .set({
+          name: dto.name,
+          avatar: dto.avatar ?? existing.avatar,
+          updatedAt: monotonicUpdateTimestamp(agentTable.updatedAt),
+        })
+        .where(eq(agentTable.id, existing.id))
+        .returning();
+      return renamed ?? null;
     });
 
     if (!row) return null;

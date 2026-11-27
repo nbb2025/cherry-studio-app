@@ -2,6 +2,8 @@
  * What the user may change in the active profile. Data services enforce these rules at their write
  * boundaries and screens read the same ones, so neither side asks which edition is running.
  */
+import { isIagentEdition } from '@/shared/utils/iagentEdition';
+
 import { isEnterpriseProfile } from './activeProfile';
 import { type Agent, MANAGED_AGENT_EDITABLE_FIELDS } from './types/agent';
 import type { UniqueModelId } from './types/model';
@@ -33,7 +35,14 @@ const ENTERPRISE_CAPABILITIES: EditionCapabilities = Object.freeze({
   desktopConfigImport: false,
 });
 
+const IAGENT_CAPABILITIES: EditionCapabilities = Object.freeze({
+  ...COMMUNITY_CAPABILITIES,
+  providerOnboarding: false,
+  desktopConfigImport: false,
+});
+
 export function editionCapabilities(): EditionCapabilities {
+  if (isIagentEdition()) return IAGENT_CAPABILITIES;
   return isEnterpriseProfile() ? ENTERPRISE_CAPABILITIES : COMMUNITY_CAPABILITIES;
 }
 

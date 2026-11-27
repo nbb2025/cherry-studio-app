@@ -15,7 +15,9 @@ import Animated, {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { scheduleOnRN } from 'react-native-worklets';
 
+import { getAppLogo } from '@/frontend/appShell/branding';
 import { recordStartupEvent } from '@/shared/core/logger/startupDiagnostics';
+import { isIagentEdition } from '@/shared/utils/iagentEdition';
 
 import {
   getStartupExitDurationMs,
@@ -57,6 +59,7 @@ export function StartupCover({
   onLayout,
 }: StartupCoverProps) {
   const insets = useSafeAreaInsets();
+  const isIagent = isIagentEdition();
   const reducedMotion = useReducedMotion();
   const attributionOpacity = useSharedValue(reducedMotion ? 1 : 0);
   const coverOpacity = useSharedValue(1);
@@ -148,7 +151,7 @@ export function StartupCover({
           accessibilityIgnoresInvertColors
           accessible={false}
           resizeMode="contain"
-          source={STARTUP_LOGO}
+          source={isIagent ? getAppLogo() : STARTUP_LOGO}
           style={[styles.logo, logoStyle]}
         />
       </View>
@@ -161,8 +164,15 @@ export function StartupCover({
           attributionStyle,
         ]}
       >
-        <Text accessible={false} allowFontScaling={false} style={styles.brandText}>
-          Cherry Studio
+        <Text
+          accessible={false}
+          allowFontScaling={false}
+          style={[
+            styles.brandText,
+            isIagent && { color: colorScheme === 'dark' ? '#FFFFFF' : '#171717' },
+          ]}
+        >
+          {isIagent ? 'iAgent' : 'Cherry Studio'}
         </Text>
       </Animated.View>
     </Animated.View>

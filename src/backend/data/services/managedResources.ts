@@ -1,4 +1,5 @@
 import { CLOUD_PROVIDER_ID } from '@/shared/contracts/cloud';
+import { iagentGroupId, isIagentModel } from '@/shared/contracts/iagent';
 import { isEnterpriseProfile } from '@/shared/data/activeProfile';
 import { DataApiErrorFactory } from '@/shared/data/api/errors';
 import {
@@ -14,6 +15,8 @@ const MANAGED = 'managed by the enterprise server';
 export function assertUserOwnedProvider(providerId: string): void {
   if (providerId === CLOUD_PROVIDER_ID || providerId.startsWith(`${CLOUD_PROVIDER_ID}::`))
     throw DataApiErrorFactory.invalidOperation('provider.edit', 'managed by Cherry Cloud');
+  if (iagentGroupId(providerId) !== null || isIagentModel(providerId))
+    throw DataApiErrorFactory.invalidOperation('provider.edit', 'managed by iAgent');
 }
 
 let admitEnterpriseSession: () => Promise<void> = async () => {};

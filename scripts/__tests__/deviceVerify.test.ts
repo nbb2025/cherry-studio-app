@@ -97,12 +97,12 @@ describe('deviceVerify CLI helpers', () => {
       flowPath: '.maestro/flows/onboarding-skip.yaml',
       platform: 'ios',
       deviceId: 'UDID-123',
-      devClientUrl: 'cherrystudio-dev://expo-development-client/?url=http://127.0.0.1:41000',
+      devClientUrl: 'iagent-dev://expo-development-client/?url=http://127.0.0.1:41000',
     });
-    expect(built.appId).toBe('com.cherryai.cherrystudio-app.dev');
+    expect(built.appId).toBe('dev.iagent.app.dev');
     expect(built.command).toBe('maestro');
     expect(built.args).toContain('UDID-123');
-    expect(built.args).toContain('APP_ID=com.cherryai.cherrystudio-app.dev');
+    expect(built.args).toContain('APP_ID=dev.iagent.app.dev');
   });
 
   it('refuses destructive cleanup targeting resident test devices', () => {
@@ -194,7 +194,7 @@ describe('deviceVerify CLI helpers', () => {
       status: 'pass',
       platform: 'android',
       device: 'emulator-5554',
-      appId: 'com.cherryai.cherrystudio_app.dev',
+      appId: 'dev.iagent.app.dev',
       metroPort: 42000,
     });
     const otherDeviceArgs = args.map((arg) => (arg === 'emulator-5554' ? 'emulator-5556' : arg));

@@ -2,6 +2,7 @@ import {
   NAVIGATION_PINNABLE_TAB_IDS,
   type NavigationPinTabId,
 } from '@/shared/data/preference/preferenceSchema';
+import { isIagentEdition } from '@/shared/utils/iagentEdition';
 
 import {
   getNavHref,
@@ -68,6 +69,10 @@ const PINNABLE_SET = new Set<string>(NAVIGATION_PINNABLE_TAB_IDS);
 const MORE_MODULE_SET = new Set<string>(MORE_MODULE_IDS);
 const REQUIRED_MIDDLE_TABS = new Set<NavigationPinTabId>(['agents']);
 
+export function isNavigationModuleAvailable(id: NavDestinationId): boolean {
+  return !isIagentEdition() || (id !== 'plugins' && id !== 'marketplace' && id !== 'devices');
+}
+
 const ROOT_PATHNAME_TO_DEST: readonly [string, NavDestinationId][] = NAV_DESTINATION_IDS.flatMap(
   (id) =>
     NAV_ROUTE_MANIFEST[id].pathPrefixes.map((prefix): [string, NavDestinationId] => [prefix, id]),
@@ -83,7 +88,7 @@ export function normalizePinnedTabs(raw: readonly string[] | undefined): Navigat
   for (const item of raw ?? []) {
     if (PINNABLE_SET.has(item)) {
       const typed = item as NavigationPinTabId;
-      if (!unique.includes(typed)) unique.push(typed);
+      if (isNavigationModuleAvailable(typed) && !unique.includes(typed)) unique.push(typed);
     }
   }
   if (!unique.includes('agents')) {
@@ -97,7 +102,11 @@ export function canPinTab(
   id: NavigationPinTabId,
 ): boolean {
   const normalized = normalizePinnedTabs(pinnedTabs);
-  return !normalized.includes(id) && normalized.length < MAX_MIDDLE_TABS;
+  return (
+    isNavigationModuleAvailable(id) &&
+    !normalized.includes(id) &&
+    normalized.length < MAX_MIDDLE_TABS
+  );
 }
 
 export function canUnpinTab(
@@ -114,7 +123,7 @@ export function pinTab(
   insertIndex?: number,
 ): NavigationPinTabId[] {
   const normalized = normalizePinnedTabs(pinnedTabs);
-  if (normalized.includes(id) || normalized.length >= MAX_MIDDLE_TABS) return normalized;
+  if (!canPinTab(normalized, id)) return normalized;
   const boundedIndex =
     insertIndex === undefined
       ? normalized.length
@@ -221,7 +230,7 @@ export function resolveDockDragPreview(
 /** Modules shown inside 「更多」 remain mutually exclusive with pinned dock tabs. */
 export function resolveMoreModules(pinnedTabs: readonly NavigationPinTabId[]): MoreModuleId[] {
   const pinned = new Set(normalizePinnedTabs(pinnedTabs));
-  return MORE_MODULE_IDS.filter((id) => !pinned.has(id));
+  return MORE_MODULE_IDS.filter((id) => isNavigationModuleAvailable(id) && !pinned.has(id));
 }
 
 export function isMoreModuleId(id: string): id is MoreModuleId {

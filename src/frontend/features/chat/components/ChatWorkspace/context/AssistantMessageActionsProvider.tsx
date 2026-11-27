@@ -15,6 +15,7 @@ import {
 import { useTranslation } from 'react-i18next';
 import { Keyboard } from 'react-native';
 
+import { useAccount } from '@/frontend/appShell/account';
 import type {
   ConversationMessage,
   ConversationSnapshot,
@@ -25,11 +26,13 @@ import { ModelPickerDrawer, type ModelPickerModelItem } from '@/frontend/compone
 import { useModelChoice } from '@/frontend/components/Policy';
 import { usePreference } from '@/frontend/data/hooks';
 import { useTransientValue } from '@/frontend/hooks/useTransientValue';
+import { isIagentModel } from '@/shared/contracts/iagent';
 import { loggerService } from '@/shared/core/logger/LoggerService';
 import {
   type AssistantMessageToolbarConfig,
   normalizeAssistantMessageToolbarConfig,
 } from '@/shared/data/types/assistantMessageToolbar';
+import { isIagentEdition } from '@/shared/utils/iagentEdition';
 
 import { useChatEditing } from '../../../context/ChatEditingProvider';
 import { editReplyHref } from '../../../editReply/editReplyRoute';
@@ -128,6 +131,16 @@ export function AssistantMessageActionsProvider({
   messages,
 }: AssistantMessageActionsProviderProps) {
   const { t } = useTranslation();
+  const { account } = useAccount();
+  const admitModel = useCallback(
+    (modelId: string | null | undefined) => {
+      if (!isIagentEdition() || !isIagentModel(modelId) || account.getState().isSignedIn)
+        return true;
+      router.navigate('/login');
+      return false;
+    },
+    [account],
+  );
   const { toast } = useToast();
   const { alert } = useAlert();
   const translationStore = useMessageTranslationStore();
@@ -286,11 +299,12 @@ export function AssistantMessageActionsProvider({
       const current = latest.current;
       if (current.isBusy) return;
       const action = current.messages.find((message) => message.key === messageId)?.actions.retry;
+      if (!admitModel(action?.modelId)) return;
       void run(`retry:${messageId}`, action, undefined, 'retryFailed', (ref) => {
         if (ref) router.replace(conversationHref(ref));
       });
     },
-    [run],
+    [admitModel, run],
   );
   const fork = useCallback(
     ({ messageId }: { messageId: string }) => {
@@ -358,12 +372,12 @@ export function AssistantMessageActionsProvider({
       const messageId = answeringMessageId;
       closeAnswerModelPicker();
       const current = latest.current;
-      if (!messageId || current.isBusy) return;
+      if (!messageId || current.isBusy || !admitModel(item.modelId)) return;
       const action = current.messages.find((message) => message.key === messageId)?.actions
         .answerWith;
       void run(`answer:${messageId}`, action, { modelId: item.modelId }, 'retryFailed');
     },
-    [answeringMessageId, closeAnswerModelPicker, run],
+    [admitModel, answeringMessageId, closeAnswerModelPicker, run],
   );
   const answeringMessage = answeringMessageId
     ? messages.find((message) => message.key === answeringMessageId)

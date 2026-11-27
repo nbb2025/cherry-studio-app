@@ -27,14 +27,20 @@ import { dataApiCollectionFilters } from '@/frontend/data/utils/optimisticQueryU
 import { reorderLocally } from '@/frontend/data/utils/reorder';
 import { matchesSearchKeywords, toSearchKeywords } from '@/frontend/utils/search';
 import { CLOUD_PROVIDER_ID } from '@/shared/contracts/cloud';
+import { iagentGroupId } from '@/shared/contracts/iagent';
 import { isEnterpriseProfile } from '@/shared/data/activeProfile';
 import { capabilityPolicy } from '@/shared/data/managedPolicy';
 import type { Provider } from '@/shared/data/types/provider';
+import { isIagentEdition } from '@/shared/utils/iagentEdition';
 
 import { SettingsGroupedSeparator } from '../components/SettingsServiceRow';
 import { ProviderListRow } from './components/ProviderListRow';
 import { useProviderSetup } from './hooks/useProviderSetup';
-import { PROVIDER_LIST_PAGE_SIZE, PROVIDER_LIST_STALE_TIME } from './providerListQuery';
+import {
+  isVisibleSavedProvider,
+  PROVIDER_LIST_PAGE_SIZE,
+  PROVIDER_LIST_STALE_TIME,
+} from './providerListQuery';
 
 const PROVIDER_ROW_ESTIMATED_HEIGHT = 56;
 const providerListTransition = LinearTransition.duration(duration.base)
@@ -161,6 +167,9 @@ function ProviderListView({ canEditProviders = true }: { canEditProviders?: bool
   );
   const keywords = useMemo(() => toSearchKeywords(query), [query]);
   const isFiltering = keywords.length > 0;
+  const iagentEdition = isIagentEdition();
+  // Filter the full saved list so hidden presets or managed channels cannot consume a page.
+  const useFullProviderList = iagentEdition || isFiltering;
   const hasPendingProviderUpdate = pendingProviderStates.size > 0;
   const canReorderProviders = canEditProviders && !isFiltering && !hasPendingProviderUpdate;
 
@@ -237,6 +246,7 @@ function ProviderListView({ canEditProviders = true }: { canEditProviders?: bool
   );
 
   const providersPageQuery = useInfiniteQuery('/providers/page', {
+    enabled: !iagentEdition,
     limit: PROVIDER_LIST_PAGE_SIZE,
     staleTime: PROVIDER_LIST_STALE_TIME,
   });
@@ -246,17 +256,30 @@ function ProviderListView({ canEditProviders = true }: { canEditProviders?: bool
     [providersPageQuery.pages],
   );
   const allProvidersQuery = useQuery('/providers', {
-    enabled: isFiltering,
+    enabled: useFullProviderList,
     staleTime: PROVIDER_LIST_STALE_TIME,
   });
+  const providersLoading =
+    providersPageQuery.isLoading || (useFullProviderList && allProvidersQuery.isPending);
   const listedProviders = useMemo(() => {
-    const providers = isFiltering ? (allProvidersQuery.data ?? pagedProviders) : pagedProviders;
+    const providers = useFullProviderList
+      ? (allProvidersQuery.data ?? pagedProviders)
+      : pagedProviders;
     return providers.filter(
       (provider) =>
-        (provider.id !== CLOUD_PROVIDER_ID || !isEnterpriseProfile()) &&
+        (provider.id !== CLOUD_PROVIDER_ID || (!isEnterpriseProfile() && !iagentEdition)) &&
+        iagentGroupId(provider.id) === null &&
+        isVisibleSavedProvider(provider) &&
         (!isFiltering || matchesSearchKeywords(keywords, [provider.name])),
     );
-  }, [allProvidersQuery.data, isFiltering, keywords, pagedProviders]);
+  }, [
+    allProvidersQuery.data,
+    iagentEdition,
+    isFiltering,
+    keywords,
+    pagedProviders,
+    useFullProviderList,
+  ]);
   const openProvider = useCallback(
     (provider: Provider) => {
       if (isNavigatingRef.current) {
@@ -438,26 +461,18 @@ function ProviderListView({ canEditProviders = true }: { canEditProviders?: bool
     [canEditProviders, canReorderProviders, openProvider, t, toggleProviderEnabled],
   );
   const loadMoreProviders = useCallback(() => {
-    if (!isFiltering && !hasPendingProviderUpdate) {
+    if (!useFullProviderList && !hasPendingProviderUpdate) {
       void loadNextProviderPage();
     }
-  }, [hasPendingProviderUpdate, isFiltering, loadNextProviderPage]);
+  }, [hasPendingProviderUpdate, loadNextProviderPage, useFullProviderList]);
   const listFooter = useMemo(
     () =>
-      providersPageQuery.isLoading ||
-      providersPageQuery.isLoadingMore ||
-      (isFiltering && allProvidersQuery.isPending) ? (
+      providersLoading || providersPageQuery.isLoadingMore ? (
         <View className="h-16 items-center justify-center">
           <Spinner accessibilityLabel={t('settings.provider.loading')} />
         </View>
       ) : null,
-    [
-      allProvidersQuery.isPending,
-      isFiltering,
-      providersPageQuery.isLoading,
-      providersPageQuery.isLoadingMore,
-      t,
-    ],
+    [providersLoading, providersPageQuery.isLoadingMore, t],
   );
   const openProviderCatalog = useCallback(() => {
     router.push('/settings/provider/catalog');
@@ -475,11 +490,15 @@ function ProviderListView({ canEditProviders = true }: { canEditProviders?: bool
         label: t('settings.provider.actions.add'),
         onPress: openProviderCatalog,
       },
-      {
-        id: 'sync-from-desktop',
-        label: t('settings.provider.desktopSync.menuLabel'),
-        onPress: openDesktopSync,
-      },
+      ...(capabilityPolicy('desktopConfigImport').canEdit('provider')
+        ? [
+            {
+              id: 'sync-from-desktop',
+              label: t('settings.provider.desktopSync.menuLabel'),
+              onPress: openDesktopSync,
+            },
+          ]
+        : []),
     ],
     [openDesktopSync, openProviderCatalog, t],
   );
@@ -501,6 +520,17 @@ function ProviderListView({ canEditProviders = true }: { canEditProviders?: bool
   return (
     <>
       <ProviderListHeader rightActions={rightActions} title={t('settings.pages.provider.title')} />
+      {iagentEdition ? (
+        <View className="px-4 pt-2">
+          <Section>
+            <Section.Item
+              label="iAgent"
+              description={t('iagent.builtIn')}
+              onPress={() => router.push('/settings/profile')}
+            />
+          </Section>
+        </View>
+      ) : null}
       <InlineSearch onChangeText={setQuery} value={query} />
       <View className="min-h-0 flex-1 pb-5">
         {providerItems.length > 0 ? (
@@ -565,7 +595,7 @@ function ProviderListView({ canEditProviders = true }: { canEditProviders?: bool
             <Section>
               <Section.Item
                 label={
-                  providersPageQuery.isLoading || (isFiltering && allProvidersQuery.isPending)
+                  providersLoading
                     ? t('settings.provider.loading')
                     : t('settings.provider.search.empty')
                 }

@@ -43,6 +43,10 @@ jest.mock('expo-router', () => ({
   useLocalSearchParams: () => ({}),
   router: { push: jest.fn(), replace: jest.fn() },
 }));
+const mockAccount = { getState: () => ({ isSignedIn: false }) };
+jest.mock('@/frontend/appShell/account', () => ({
+  useAccount: () => ({ account: mockAccount }),
+}));
 const mockLoggerError = jest.fn();
 let mockSourceTitle: string | undefined;
 

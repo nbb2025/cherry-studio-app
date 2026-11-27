@@ -3,6 +3,7 @@ import { Stack } from 'expo-router';
 import { mainHeaderScreenOptions, RouteHeaderProvider } from '@/frontend/appShell/header';
 import { getTransparentHeaderStyle } from '@/frontend/appShell/navigation';
 import { useThemeColor } from '@/frontend/hooks/useThemeColor';
+import { isIagentEdition } from '@/shared/utils/iagentEdition';
 
 /**
  * Native-stack host for the chat surface. The drawer scene itself renders no
@@ -23,7 +24,12 @@ export default function ChatStackLayout() {
           headerStyle: getTransparentHeaderStyle(),
           headerTintColor: foregroundColor,
         }}
-      />
+      >
+        <Stack.Screen name="index" />
+        <Stack.Protected guard={!isIagentEdition()}>
+          <Stack.Screen name="remote" />
+        </Stack.Protected>
+      </Stack>
     </RouteHeaderProvider>
   );
 }

@@ -13,8 +13,18 @@ const mockPreferences = {
 };
 const mockFiles = new Set<string>();
 let mockDeletionFails = false;
+let mockEdition: string | undefined;
+let mockIagentUserId: number | undefined;
 const profileId = '8a1f4e9c-2b7d-4c1a-9e3f-1d2c3b4a5f60';
 
+jest.mock('expo-constants', () => ({
+  get expoConfig() {
+    return { extra: { edition: mockEdition } };
+  },
+}));
+jest.mock('../installationIagentAccount', () => ({
+  readIagentSession: () => (mockIagentUserId === undefined ? null : { userId: mockIagentUserId }),
+}));
 jest.mock('expo-crypto', () => ({ randomUUID: () => '8a1f4e9c-2b7d-4c1a-9e3f-1d2c3b4a5f60' }));
 jest.mock('@/backend/core/application/Application', () => ({
   application: {
@@ -71,6 +81,8 @@ beforeEach(() => {
   mockStorage.clear();
   mockFiles.clear();
   mockDeletionFails = false;
+  mockEdition = undefined;
+  mockIagentUserId = undefined;
   setActiveProfile(LOCAL_PROFILE);
   installationProfiles().setActive(LOCAL_PROFILE);
   for (const name of [
@@ -134,4 +146,33 @@ test('keeps the old cache owner and profile closed until failed cleanup succeeds
   selectActiveProfile();
   expect(mockStorage.get('cache-owner')).toBe('local');
   expect(mockFiles.has('cache/PdfText/fixture')).toBe(false);
+});
+
+test('iAgent preserves the previous preview workspace across account switches', () => {
+  const legacyProfile = installationProfiles().resolve(
+    { deployment: 'deployment', subject: 'subject', authentication: 'password' },
+    'https://example.com',
+  );
+  installationProfiles().setActive(legacyProfile);
+  mockEdition = 'iagent';
+  mockIagentUserId = 11;
+  selectActiveProfile();
+  expect(getActiveProfile()).toMatchObject({ id: 'iagent-11', iagentUserId: 11, identity: null });
+  mockFiles.add('cache/PdfText/first-account.json');
+  mockIagentUserId = 42;
+  selectActiveProfile();
+  expect(getActiveProfile()).toMatchObject({ id: 'iagent-11', iagentUserId: 11, identity: null });
+  expect(mockFiles.has('cache/PdfText/first-account.json')).toBe(true);
+  mockIagentUserId = undefined;
+  selectActiveProfile();
+  expect(getActiveProfile()).toMatchObject({ id: 'iagent-11' });
+});
+
+test('a fresh iAgent workspace stays local after signing in', () => {
+  mockEdition = 'iagent';
+  selectActiveProfile();
+  expect(getActiveProfile()).toBe(LOCAL_PROFILE);
+  mockIagentUserId = 42;
+  selectActiveProfile();
+  expect(getActiveProfile()).toBe(LOCAL_PROFILE);
 });

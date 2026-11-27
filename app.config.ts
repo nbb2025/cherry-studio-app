@@ -27,14 +27,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
   const eas = config.extra?.eas;
   const reporting = {
     environment: profile,
-    services: Object.fromEntries(
-      Object.entries(reportingServices).map(([name, service]) => [
-        name,
-        profile === 'production' &&
-          process.env.EXPO_PUBLIC_STORYBOOK_ENABLED !== 'true' &&
-          service.enabled,
-      ]),
-    ),
+    services: Object.fromEntries(Object.keys(reportingServices).map((name) => [name, false])),
   };
 
   return {
@@ -46,10 +39,10 @@ export default ({ config }: ConfigContext): ExpoConfig => {
           ? `${config.name} Preview`
           : config.name!,
     slug: config.slug!,
-    scheme: `cherrystudio${suffix.replace('.', '-')}`,
+    scheme: `iagent${suffix.replace('.', '-')}`,
     updates: {
       ...config.updates,
-      enabled: profile !== 'development' && process.env.EXPO_PUBLIC_STORYBOOK_ENABLED !== 'true',
+      enabled: false,
     },
     ios: {
       ...config.ios,
@@ -90,7 +83,6 @@ export default ({ config }: ConfigContext): ExpoConfig => {
       '@preeternal/react-native-file-hash',
       '@siteed/sherpa-onnx.rn',
       './plugins/withDiagnostics',
-      './plugins/withCloudSigning',
       './modules/crash-reporting/app.plugin.js',
       './scripts/withReportingAutolinking.js',
     ]
@@ -141,7 +133,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
       }),
     extra: {
       ...config.extra,
-      configServiceOrigin: process.env.CONFIG_SERVICE_ORIGIN,
+      edition: 'iagent',
       // Packaged builds gate on the native `production-apk` channel; only development reads the flag.
       // Native APK installation capability is separately embedded by withAppUpdates.
       isApkUpdatesEnabled: profile === 'development' && apkUpdatesSetting === 'true',

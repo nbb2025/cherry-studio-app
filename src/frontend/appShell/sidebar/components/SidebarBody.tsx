@@ -1,4 +1,5 @@
 import ClockIcon from '@cherrystudio/app-icons/icons/clock';
+import PaletteIcon from '@cherrystudio/app-icons/icons/palette';
 import { ScrollInteractionBoundary, ScrollShadow } from '@cherrystudio/ui/components';
 import { useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -77,7 +78,7 @@ function SidebarBodyContent({
   registerEndReachedHandler: RegisterEndReachedHandler;
 }) {
   const { t } = useTranslation();
-  const { openScheduledTasks } = useSidebarActions('SidebarBody');
+  const { openCreative, openScheduledTasks } = useSidebarActions('SidebarBody');
   const { source } = useChatSource();
   const destination = useSidebarDestination();
   const { progress } = useSidebarSelection();
@@ -86,6 +87,19 @@ function SidebarBodyContent({
 
   return (
     <>
+      {source === 'local' && openCreative ? (
+        <Animated.View style={navigationStyle}>
+          <SidebarNavRow
+            icon={PaletteIcon}
+            label={t('iagent.studio.title')}
+            onPress={openCreative}
+            testID="sidebar-paintings"
+            disabled={disabled}
+            isSelected={destination === 'paintings'}
+          />
+        </Animated.View>
+      ) : null}
+
       {source === 'remote' ? (
         <Animated.View style={navigationStyle}>
           <SidebarNavRow
