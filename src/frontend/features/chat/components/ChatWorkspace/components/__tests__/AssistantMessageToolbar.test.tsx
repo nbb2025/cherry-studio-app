@@ -19,6 +19,11 @@ import { copyAssistantMessageText } from '../../utils/copyAssistantMessageText';
 import * as speechAssistantModule from '../../utils/speechAssistantMessageText';
 import { AssistantMessageToolbar } from '../AssistantMessageToolbar';
 
+jest.mock('@/frontend/appShell/account', () => {
+  const account = { getState: () => ({ isSignedIn: false }) };
+  return { useAccount: () => ({ account }) };
+});
+
 jest.mock('../../translation/MessageTranslationProvider', () => ({
   useMessageTranslation: () => mockMessageTranslation,
   useMessageTranslationStore: () => null,

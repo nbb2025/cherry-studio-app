@@ -6,6 +6,11 @@ import { AssistantMessageActionsProvider } from '../../context/AssistantMessageA
 import { copyAssistantMessageText } from '../../utils/copyAssistantMessageText';
 import { UserMessageToolbar } from '../UserMessageToolbar';
 
+jest.mock('@/frontend/appShell/account', () => {
+  const account = { getState: () => ({ isSignedIn: false }) };
+  return { useAccount: () => ({ account }) };
+});
+
 jest.mock('../../translation/MessageTranslationProvider', () => ({
   useMessageTranslationStore: () => null,
 }));

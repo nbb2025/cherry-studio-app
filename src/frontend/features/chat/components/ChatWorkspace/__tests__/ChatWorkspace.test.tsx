@@ -13,6 +13,11 @@ import {
 import type { PendingChatSend } from '../../../runtime/ChatProvider';
 import { ChatWorkspace as Workspace } from '../ChatWorkspace';
 
+jest.mock('@/frontend/appShell/account', () => {
+  const account = { getState: () => ({ isSignedIn: false }) };
+  return { useAccount: () => ({ account }) };
+});
+
 jest.mock('@/frontend/data/hooks', () => ({
   usePreference: () => [
     jest.requireActual('@/shared/data/types/assistantMessageToolbar')
